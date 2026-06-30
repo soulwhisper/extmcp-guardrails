@@ -43,7 +43,7 @@ jobs:
 
       - name: Run ruff
         # Equivalent to `make lint`.
-        run: ruff check guardrails server.py tests
+        run: ruff check guardrails server.py tests scripts
 
   test:
     name: Unit tests + coverage
@@ -68,7 +68,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          pip install grpcio grpcio-tools grpcio-health-checking protobuf pyyaml
+          pip install grpcio grpcio-health-checking pyyaml
 
       - name: Verify ML stack is NOT installed
         # Guard rail: fail fast if a future change accidentally pulls torch in.
@@ -81,17 +81,49 @@ jobs:
           print("OK: no torch/transformers/llamafirewall in CI env")
           PY
 
-      - name: Regenerate proto stubs (ensure committed copies exist & importable)
-        run: |
-          python -m grpc_tools.protoc -I proto \
-              --python_out=proto --grpc_python_out=proto \
-              proto/ext_mcp.proto
-
       - name: Run pytest with coverage
-        # Equivalent to: make test + coverage xml for Codecov.
+        # The committed proto stubs are used as-is (no regeneration). The
+        # proto-check job verifies they are in sync with the .proto.
+        # Generates: coverage.xml (Codecov), coverage.json (badge), term report.
         run: |
           python -m pytest tests/ -q \
-              --cov=guardrails --cov=server --cov-report=xml --cov-report=term
+              --cov=guardrails --cov=server \
+              --cov-report=xml \
+              --cov-report=term \
+              --cov-report=json:coverage.json
+
+      - name: Coverage summary to job summary
+        # Emit a markdown coverage table to the GitHub Actions job summary so
+        # the coverage % is visible on every CI run without leaving GitHub.
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          try:
+              data = json.load(open("coverage.json"))
+          except FileNotFoundError:
+              print("coverage.json not found, skipping summary")
+              raise SystemExit(0)
+          totals = data.get("totals", {})
+          pct = totals.get("percent_covered", 0.0)
+          covered = totals.get("covered_lines", 0)
+          missing = totals.get("missing_lines", 0)
+          total = totals.get("num_statements", 0)
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if not summary:
+              raise SystemExit(0)
+          with open(summary, "a", encoding="utf-8") as fh:
+              fh.write("## Coverage\n\n")
+              fh.write(f"**{pct:.1f}%** covered — {covered} covered, {missing} missing, {total} total statements\n\n")
+              fh.write("| Module | Statements | Missing | Cover |\n")
+              fh.write("|--------|------------|---------|-------|\n")
+              for fpath, fdata in sorted(data.get("files", {}).items()):
+                  fp = fdata["summary"]["percent_covered"]
+                  s = fdata["summary"]["num_statements"]
+                  m = fdata["summary"]["missing_lines"]
+                  fh.write(f"| `{fpath}` | {s} | {m} | {fp:.0f}% |\n")
+          print(f"coverage summary written ({pct:.1f}%)")
+          PY
 
       - name: Upload coverage XML
         if: always()
@@ -99,6 +131,16 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+          if-no-files-found: warn
+
+      - name: Upload coverage JSON
+        # Used by the README coverage badge (shields.io endpoint reads this
+        # artifact via the GitHub Actions badge API) and by downstream tools.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-json
+          path: coverage.json
           if-no-files-found: warn
 
       - name: Upload to Codecov
@@ -128,27 +170,82 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install grpcio-tools
+        # Pin to the 1.81.x line — the committed stubs were generated with
+        # grpcio-tools 1.81.0. The proto_check script normalizes cosmetic
+        # version differences, but staying on the same minor avoids drift.
         run: |
           python -m pip install --upgrade pip
-          pip install "grpcio-tools>=1.62,<2" "protobuf>=4.25,<6"
+          pip install "grpcio-tools>=1.81,<1.82"
 
-      - name: Regenerate stubs over committed copies
-        # We regenerate in place into proto/ and then diff against HEAD.
-        # If anything differs, the committed stubs are out of sync with
-        # proto/ext_mcp.proto and must be regenerated (`make proto`).
-        run: |
-          python -m grpc_tools.protoc -I proto \
-              --python_out=proto --grpc_python_out=proto \
-              proto/ext_mcp.proto
+      - name: Proto stub sync check (normalized)
+        # Regenerates stubs into a temp dir and compares SEMANTIC content
+        # (after normalizing toolchain-version cosmetics like version stamps,
+        # class style, and f-string formatting) against the committed stubs.
+        # Fails only on real proto contract drift, not patch-version bumps.
+        run: python scripts/proto_check.py
 
-      - name: Fail if committed stubs drifted
+  # Generates a shields.io-compatible JSON badge from the coverage report and
+  # commits it to .github/coverage-badge.json on main. The README coverage
+  # badge reads this file via the raw.githubusercontent.com endpoint, so the
+  # badge stays current without any third-party service (Codecov etc.).
+  # Only runs on push to main (not PRs) to avoid churning the badge on every PR.
+  coverage-badge:
+    name: Update coverage badge
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test.result == 'success'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download coverage JSON artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-json
+          path: coverage-artifact
+
+      - name: Generate shields.io badge JSON
         run: |
-          if ! git diff --exit-code -- proto/ext_mcp_pb2.py proto/ext_mcp_pb2_grpc.py; then
-            echo "::error::Committed proto stubs are out of sync with proto/ext_mcp.proto"
-            echo "::error::Run 'make proto' locally and commit the regenerated files."
-            exit 1
+          python - <<'PY'
+          import json
+          data = json.load(open("coverage-artifact/coverage.json"))
+          pct = data["totals"]["percent_covered"]
+          # shields.io endpoint schema: { schemaVersion, label, message, color }
+          if pct >= 90:
+              color = "brightgreen"
+          elif pct >= 80:
+              color = "green"
+          elif pct >= 70:
+              color = "yellow"
+          elif pct >= 60:
+              color = "orange"
+          else:
+              color = "red"
+          badge = {
+              "schemaVersion": 1,
+              "label": "coverage",
+              "message": f"{pct:.0f}%",
+              "color": color,
+          }
+          with open(".github/coverage-badge.json", "w", encoding="utf-8") as fh:
+              json.dump(badge, fh, indent=2)
+              fh.write("\n")
+          print(f"badge: {badge}")
+          PY
+
+      - name: Commit badge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/coverage-badge.json
+          if git diff --cached --quiet; then
+            echo "badge unchanged, no commit"
+          else
+            git commit -m "chore: update coverage badge [skip ci]"
+            git push
           fi
-          echo "OK: committed stubs match proto/ext_mcp.proto"
 
   # Single required-status-check target for branch protection. Branch
   # protection can be configured to require only `ci-pass` instead of naming

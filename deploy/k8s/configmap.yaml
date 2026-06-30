@@ -21,9 +21,9 @@ metadata:
   name: guardrail-rules
   namespace: agent-system
   labels:
-    app: extmcp-guardrail
+    app: extmcp-guardrails
     component: guardrail
-    app.kubernetes.io/name: extmcp-guardrail
+    app.kubernetes.io/name: extmcp-guardrails
     app.kubernetes.io/component: rules
     app.kubernetes.io/part-of: agentgateway
     app.kubernetes.io/managed-by: kustomize

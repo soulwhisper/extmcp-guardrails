@@ -13,8 +13,11 @@ gated on first-stage `HUMAN_REVIEW`.
 
 [LlamaFirewall]: https://github.com/meta-llama/PurpleLlama-LlamaFirewall
 
+[![CI](https://github.com/soulwhisper/extmcp-guardrails/actions/workflows/ci.yml/badge.svg)](https://github.com/soulwhisper/extmcp-guardrails/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/soulwhisper/extmcp-guardrails/actions/workflows/codeql.yml/badge.svg)](https://github.com/soulwhisper/extmcp-guardrails/actions/workflows/codeql.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/soulwhisper/extmcp-guardrails/main/.github/coverage-badge.json)](https://github.com/soulwhisper/extmcp-guardrails/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Image](https://img.shields.io/badge/image-ghcr.io%2Fsoulwhisper%2Fextmcp--guardrail%3A0.1.0-blue)](https://github.com/soulwhisper/extmcp-guardrail/pkgs/container/extmcp-guardrail)
+[![Image](https://img.shields.io/badge/image-ghcr.io%2Fsoulwhisper%2Fextmcp--guardrail%3A0.1.0-blue)](https://github.com/soulwhisper/extmcp-guardrails/pkgs/container/extmcp-guardrails)
 
 ---
 
@@ -180,8 +183,8 @@ stack; LlamaFirewall is imported lazily.
 
 ```bash
 # 1. Clone
-git clone https://github.com/soulwhisper/extmcp-guardrail.git
-cd extmcp-guardrail
+git clone https://github.com/soulwhisper/extmcp-guardrails.git
+cd extmcp-guardrails
 
 # 2. Regenerate gRPC stubs (only needed if proto/ext_mcp.proto changes;
 #    committed stubs are checked in so this is a no-op on a fresh clone).
@@ -190,7 +193,7 @@ make proto
 # 3. Install dev/test deps (no torch / transformers — fast local iteration)
 make dev
 
-# 4. Run the unit suite (71 tests, ~0.3s)
+# 4. Run the unit suite (72 tests, ~0.3s)
 make test
 
 # 5. Build the container image
@@ -206,7 +209,7 @@ make run
 docker run --rm -p 9001:9001 \
   --env-file examples/docker-run.env \
   -v $(pwd)/examples/rules.policy:/etc/guardrails/rules.policy:ro \
-  ghcr.io/soulwhisper/extmcp-guardrail:0.1.0
+  ghcr.io/soulwhisper/extmcp-guardrails:0.1.0
 ```
 
 ### Dry-run mode
@@ -220,7 +223,7 @@ docker run --rm -p 9001:9001 \
   -e GUARDRAIL_DRY_RUN=1 \
   -e ENABLE_REGEX_SCANNER=0 \
   -e ENABLE_LLAMAFIREWALL=0 \
-  ghcr.io/soulwhisper/extmcp-guardrail:0.1.0
+  ghcr.io/soulwhisper/extmcp-guardrails:0.1.0
 ```
 
 ### End-to-end smoke test
@@ -257,7 +260,7 @@ deadline.
 | Networking    | `LISTEN_ADDR`                 | `[::]:9001`                | gRPC bind address. `127.0.0.1:9001` for loopback-only (e.g. sidecar-on-localhost).                                                             |
 | Networking    | `SERVER_MAX_WORKERS`          | `8`                        | `grpc.aio` ThreadPoolExecutor size. Each in-flight RPC occupies one worker; raise for high-concurrency deployments.                            |
 | Observability | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(unset)_                  | OTLP/gRPC endpoint (e.g. `http://otel-collector.observability.svc:4317`). When unset or OTel SDK absent, the sidecar degrades to audit-only.   |
-| Observability | `OTEL_SERVICE_NAME`           | `extmcp-guardrail`         | Service name reported on OTel spans/metrics.                                                                                                   |
+| Observability | `OTEL_SERVICE_NAME`           | `extmcp-guardrails`        | Service name reported on OTel spans/metrics.                                                                                                   |
 | Observability | `AUDIT_LOG_PATH`              | _(unset)_                  | Append-only JSONL audit log path. `-` or unset -> stdout. Always on; survives OTel outages.                                                    |
 | Misc          | `GUARDRAIL_DRY_RUN`           | `false`                    | Replace all real scanners with allow-stubs. Use to validate wiring without loading ML models.                                                  |
 | Misc          | `LOG_LEVEL`                   | `INFO`                     | Python logging level (`DEBUG` / `INFO` / `WARNING` / `ERROR`).                                                                                 |
@@ -360,7 +363,7 @@ for a non-K8s, standalone agentgateway config pointing at `localhost:9001`.
 ## Testing
 
 ```bash
-# Unit suite (71 tests, ~0.3s) — pure-Python policy core, no ML deps required
+# Unit suite (72 tests, ~0.3s) — pure-Python policy core, no ML deps required
 make test
 
 # With coverage
@@ -383,7 +386,12 @@ rule loader. The e2e smoke boots a live server, exercises health +
 private key) + malformed `INVALID_ARGUMENT`, and exits non-zero on any
 mismatch.
 
-All 71 unit tests and the e2e smoke are green on a fresh clone.
+All 72 unit tests and the e2e smoke are green on a fresh clone.
+
+CI runs the unit suite with coverage on every push/PR. The coverage
+percentage is published as a [job summary](https://github.com/soulwhisper/extmcp-guardrails/actions/workflows/ci.yml)
+markdown table and as the README coverage badge (auto-updated on every push
+to `main` via the `coverage-badge` CI job).
 
 ## Security model and failure modes
 
@@ -403,7 +411,7 @@ guardrail outage is silent than when it is loud. `-32001` is loud.
 ## Project layout
 
 ```
-extmcp-guardrail/
+extmcp-guardrails/
 ├── proto/                        # ext_mcp.proto + generated pb2 stubs (committed)
 │   ├── ext_mcp.proto             # ExtMcp gRPC contract (agentgateway v1alpha1)
 │   ├── ext_mcp_pb2.py            # generated (do not edit; regen via `make proto`)
@@ -422,7 +430,7 @@ extmcp-guardrail/
 │   └── rules/
 │       ├── __init__.py           # RulePack loader (path / module / env, SIGHUP reload)
 │       └── default.py            # bundled homelab starter rule pack
-├── tests/                        # 71 unit tests + e2e_smoke.py
+├── tests/                        # 72 unit tests + e2e_smoke.py
 ├── deploy/k8s/                   # K8s manifests (Deployment, Service, ConfigMap, CRD)
 ├── examples/                     # rule pack, env file, local agentgateway config
 ├── .github/workflows/            # CI + release workflows

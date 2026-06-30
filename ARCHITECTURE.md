@@ -451,7 +451,7 @@ Operators reload rules without dropping the gRPC server:
 kill -HUP 1
 
 # or from the host (K8s)
-kubectl exec -n agent-system deploy/extmcp-guardrail -- kill -HUP 1
+kubectl exec -n agent-system deploy/extmcp-guardrails -- kill -HUP 1
 ```
 
 If the new rule pack fails to load (syntax error, missing `RULES`
@@ -528,7 +528,7 @@ The Dockerfile is multi-stage:
 2. **`builder`** — `pip install --prefix=/install -r requirements.txt`
    with a BuildKit pip cache mount. Build tools do not leak into runtime.
 3. **`models`** — pre-downloads PromptGuard-2-86M
-   (`meta-llama/Prompt-Guard-2-86M`) into `/models/hf/pg2` via
+   (`meta-llama/Llama-Prompt-Guard-2-86M`) into `/models/hf/pg2` via
    `transformers.AutoModelForSequenceClassification.from_pretrained`. If
    the model is unavailable at build time (air-gapped build, HF outage),
    the build still succeeds — runtime will lazy-fetch on first scan
@@ -549,7 +549,7 @@ as UID/GID 65532 (matching the K8s `securityContext.runAsUser`).
 
 For a sub-500 MB image, swap the PromptGuard-2 path to ONNX:
 
-- Export `meta-llama/Prompt-Guard-2-86M` to ONNX once (`optimum.exporters`).
+- Export `meta-llama/Llama-Prompt-Guard-2-86M` to ONNX once (`optimum.exporters`).
 - Replace the `transformers` + `torch` runtime deps with `onnxruntime`
   (~50 MB vs ~1.5 GB for torch CPU).
 - Subclass `LlamaFirewallScanner` to call the ONNX session directly
