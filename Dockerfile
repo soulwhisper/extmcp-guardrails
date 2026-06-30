@@ -60,7 +60,12 @@ COPY --from=builder /install /usr/local
 RUN --mount=type=secret,id=hf_token,required=false \
     set -e; \
     TOKEN=""; \
-    [ -f /run/secrets/hf_token ] && TOKEN="$(cat /run/secrets/hf_token)"; \
+    if [ -f /run/secrets/hf_token ]; then \
+        TOKEN="$(cat /run/secrets/hf_token)"; \
+        echo "HF_TOKEN length: ${#TOKEN}"; \
+    else \
+        echo "Secret file not found"; \
+    fi; \
     if [ "${SKIP_MODEL_DOWNLOAD}" = "1" ] || [ -z "${TOKEN}" ]; then \
         echo "SKIP: Llama-Prompt-Guard-2 pre-download (SKIP_MODEL_DOWNLOAD=${SKIP_MODEL_DOWNLOAD}, HF_TOKEN set=$([ -n "${TOKEN}" ] && echo yes || echo no))"; \
         echo "      Runtime will lazy-fetch on first scan (requires HF_TOKEN env var)."; \
