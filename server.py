@@ -1,65 +1,104 @@
-import grpc, asyncio, json, struct
-from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+"""Server entrypoint — grpc-aio ExtMcp servicer on :9001 (h2c).
+
+Boots:
+
+* the :class:`GuardrailEngine` (warmed up before accepting traffic)
+* the gRPC aio server with the ExtMcp servicer + grpc.health.v1
+* a ``SIGHUP`` handler that hot-reloads the Invariant rule pack
+* a graceful-shutdown path on SIGTERM/SIGINT
+
+``appProtocol: kubernetes.io/h2c`` on the Service is what tells agentgateway
+this is plaintext-HTTP/2 gRPC; we therefore bind an *insecure* port (no TLS).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import signal
 from concurrent import futures
-import ext_mcp_pb2 as pb
-import ext_mcp_pb2_grpc as pb_grpc
+
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+
 from guardrails.engine import GuardrailEngine
+from guardrails.proto_bridge import pbg
+from guardrails.servicer import ExtMcpServicer
 
-class ExtMcpServicer(pb_grpc.ExtMcpServicer):
-    def __init__(self, engine: GuardrailEngine):
-        self._e = engine
+logger = logging.getLogger("extmcp.guardrail.server")
 
-    async def CheckRequest(self, request: pb.McpRequest, context):
-        # mcp_request 是 JSON-RPC params 的原始字节，可能为空
-        params = json.loads(request.mcp_request) if request.mcp_request else {}
-        tool_name = params.get("name", "") if request.method == "tools/call" else ""
-        decision = await self._e.check_request(
-            method=request.method,
-            service_names=list(request.service_names),
-            tool_name=tool_name,
-            params=params,
-            headers={h.key: h.value for h in request.headers},
-        )
-        if decision.deny:
-            return pb.McpRequestResult(
-                error=pb.AuthorizationError(
-                    code=pb.AuthorizationError.PERMISSION_DENIED,
-                    message=decision.reason,
+_LISTEN_ADDR_DEFAULT = "[::]:9001"
+_GRACE_SECS = 5.0
+
+
+async def serve() -> None:
+    from guardrails.config import GuardrailConfig
+
+    config = GuardrailConfig.from_env()
+    engine = GuardrailEngine.from_config(config)
+    await engine.awarm()
+
+    server = grpc_aio_server(engine, max_workers=config.server_max_workers)
+    server.add_insecure_port(config.listen_addr)
+
+    # Health check: SERVING only after the engine is warmed up so the
+    # readinessProbe keeps the Pod out of rotation during model load.
+    health_servicer = health.aio.HealthServicer()
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+    await health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+    await health_servicer.set("ExtMcp", health_pb2.HealthCheckResponse.SERVING)
+
+    stop_event = asyncio.Event()
+
+    def _request_stop(*_: object) -> None:
+        logger.info("shutdown signal received")
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError):  # pragma: no cover - Windows
+            loop.add_signal_handler(sig, _request_stop)
+
+    # SIGHUP -> reload Invariant rules without dropping the server.
+    def _reload_rules(*_: object) -> None:
+        try:
+            # The engine owns its InvariantEngine -> RulePack; reload there.
+            inv = engine._c.invariant  # type: ignore[attr-defined]
+            if inv is not None:
+                # RulePack reload reads the same env path.
+                from guardrails.rules import RulePack
+
+                # The engine built its own RulePack in from_config; reconstruct
+                # a fresh one and swap the invariant engine's rule list.
+                fresh = RulePack.from_env()
+                # InvariantEngine stores rules in a list; swap atomically.
+                inv._rules = list(fresh.rules)  # type: ignore[attr-defined]
+                logger.info(
+                    "invariant rules reloaded (v%s, %d rules)", fresh.version, len(fresh.rules)
                 )
-            )
-        if decision.mutated_params is not None:
-            return pb.McpRequestResult(mutated=json.dumps(decision.mutated_params).encode())
-        return pb.McpRequestResult(pass=pb.Pass())
+        except Exception as exc:  # pragma: no cover
+            logger.warning("rule reload failed: %s", exc)
 
-    async def CheckResponse(self, request: pb.McpResponse, context):
-        result = json.loads(request.mcp_response) if request.mcp_response else {}
-        decision = await self._e.check_response(
-            method=request.method,
-            service_names=list(request.service_names),
-            result=result,
-        )
-        if decision.deny:
-            return pb.McpResponseResult(
-                error=pb.AuthorizationError(
-                    code=pb.AuthorizationError.PERMISSION_DENIED,
-                    message=decision.reason,
-                )
-            )
-        if decision.mutated_result is not None:
-            return pb.McpResponseResult(mutated=json.dumps(decision.mutated_result).encode())
-        return pb.McpResponseResult(pass=pb.Pass())
+    with contextlib.suppress(NotImplementedError, AttributeError):  # pragma: no cover
+        loop.add_signal_handler(signal.SIGHUP, _reload_rules)
 
-async def serve():
-    server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=8))
-    engine = GuardrailEngine.from_env()
-    await engine.awarm()  # 预热 LF 模型
-    pb_grpc.add_ExtMcpServicer_to_server(ExtMcpServicer(engine), server)
-    # health/v1 供 agentgateway readiness 探测
-    hs = health.aio.HealthServicer()
-    health_pb2_grpc.add_HealthServicer_to_server(hs, server)
-    await hs.set("ExtMcp", health_pb2.HealthCheckResponse.SERVING)
-    server.add_insecure_port("[::]:9001")  # h2c
     await server.start()
+    logger.info("ExtMcp guardrail listening on %s (h2c)", config.listen_addr)
+
+    await stop_event.wait()
+    logger.info("draining connections (grace=%ss)", _GRACE_SECS)
+    await server.stop(grace=_GRACE_SECS)
+    await health_servicer.enter_graceful_shutdown()
     await server.wait_for_termination()
 
-asyncio.run(serve())
+
+def grpc_aio_server(engine: GuardrailEngine, max_workers: int = 8):
+    import grpc
+
+    server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=max_workers))
+    pbg.add_ExtMcpServicer_to_server(ExtMcpServicer(engine), server)
+    return server
+
+
+if __name__ == "__main__":
+    asyncio.run(serve())

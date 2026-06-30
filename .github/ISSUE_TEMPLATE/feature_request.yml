@@ -1,0 +1,93 @@
+name: Feature request
+description: Propose a new scanner, rule, invariant, or behavioural change for extmcp-guardrail.
+title: "[feat]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the proposal! Please be specific about *what* behaviour
+        should change and *why*. New deny/mutation rules need a clear
+        threat model.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - New scanner (regex / LlamaFirewall / AgentAlignment / other)
+        - New invariant rule (toxic flow / loop / ordering)
+        - New deny / mutation behaviour
+        - Wire contract / proto change
+        - Observability (metrics / audit / OTel)
+        - Deployment (k8s / docker / config)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't the guardrail do today that it should?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: |
+        Concrete description of the new behaviour. For deny/mutation rules,
+        include a sample payload that should be blocked / rewritten.
+    validations:
+      required: true
+
+  - type: textarea
+    id: threat-model
+    attributes:
+      label: Threat model / rationale
+      description: |
+        For security rules: what attack does this stop? What's the false-positive
+        risk? Does it require a new dependency (e.g. torch)?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        What other ways could this be solved? Why is the proposed approach better?
+        (e.g. "considered a regex-only rule but it has high FP rate on X").
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: |
+        Screenshots, links to discussions, related issues, prior art, or anything
+        else relevant. Mock payloads / grpcurl invocations welcome.
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+
+        Thanks for the proposal! A maintainer will triage and label. If this is
+        a security-relevant deny/mutation change, expect questions about the
+        threat model and false-positive surface in review.
+
+  - type: checkboxes
+    id: breaking
+    attributes:
+      label: Breaking-impact checkboxes
+      options:
+        - label: This changes existing deny / mutation behaviour (may break existing traffic)
+        - label: This changes the proto wire contract
+        - label: This requires a new runtime dependency
+        - label: This requires a config knob / env var change

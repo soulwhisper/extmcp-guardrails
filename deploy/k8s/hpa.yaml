@@ -1,0 +1,39 @@
+# HorizontalPodAutoscaler for the ExtMcp guardrail.
+#
+# 2-4 replicas: the lower bound (2) is set so that a single Pod failure or
+# node drain never takes the guardrail fully offline (and so the PDB's
+# minAvailable: 1 is always satisfiable). The upper bound (4) caps the
+# resource footprint in a homelab cluster — bump it for production.
+#
+# CPU target 70%: the sidecar is CPU-bound during PromptGuard-2 inference
+# (torch CPU). At 70% average CPU across the Deployment the HPA scales up,
+# which keeps per-Pod latency (and therefore per-call SCANNER_TIMEOUT_MS)
+# bounded under load. Memory is not used as a scaling signal because the
+# model is a fixed cost — memory pressure indicates a leak, not load.
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: extmcp-guardrail
+  namespace: agent-system
+  labels:
+    app: extmcp-guardrail
+    component: guardrail
+    app.kubernetes.io/name: extmcp-guardrail
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: agentgateway
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: extmcp-guardrail
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -1,0 +1,121 @@
+# Build and publish the multi-arch container image to GHCR.
+#
+# Triggers:
+#   - push to main            -> tag "main"
+#   - push of v* tags         -> tag the semver (e.g. 0.1.0, 0.1) + "latest"
+#   - workflow_dispatch       -> manual run (tags from metadata-action)
+#
+# The image is ghcr.io/soulwhisper/extmcp-guardrail. Build args pass through
+# PY_VERSION (defaults to 3.11-slim in the Dockerfile).
+#
+# NOTE: this workflow is independent of release.yml — both fire on `v*` tag
+# pushes. release.yml creates the GitHub Release object; this workflow builds
+# and pushes the container image. They run in parallel.
+name: Docker publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # buildx only updates the image manifest atomically at the very end of the
+  # build, so cancelling a superseded run mid-build leaves no partial manifest.
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & push image (amd64 + arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for arm64 builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags & labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/soulwhisper/extmcp-guardrail
+          # On push to main:    tag "main"
+          # On push of v1.2.3:  tag "1.2.3", "1.2", "latest"
+          # On workflow_dispatch: tag from the ref the run was dispatched on.
+          #
+          # `latest` is enabled ONLY on semver tag pushes so a `v0.1.0` tag-push
+          # produces `0.1.0` + `0.1` + `latest`, while a main-branch push does
+          # NOT retag `latest` (main is a moving target, not a release).
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+
+      - name: Build & push (multi-arch, gha cache)
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PY_VERSION=3.11-slim
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Generate image digest summary
+        run: |
+          echo "## Published image" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+
+      # ---------------------------------------------------------------------
+      # Advisory security scan of the published image.
+      #
+      # continue-on-error: true means a trivy finding does NOT block the
+      # release — it surfaces as a warning in the run log for the maintainer
+      # to triage. Promote this to a blocking gate (exit-code: 1) once the
+      # baseline is established.
+      #
+      # trivy-action does not maintain stable major-version tags beyond @master;
+      # pin to a commit SHA in production. For now @master is acceptable because
+      # this step is advisory only.
+      # ---------------------------------------------------------------------
+      - name: Trivy scan of the published image
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@master
+        with:
+          # Scan a deterministic tag: `latest` on tag pushes (just built), `main`
+          # on main-branch pushes (just built). Both exist immediately after the
+          # build-push step above.
+          image-ref: ghcr.io/soulwhisper/extmcp-guardrail:${{ startsWith(github.ref, 'refs/tags/v') && 'latest' || 'main' }}
+          format: table
+          exit-code: "0"   # 0 = print findings but never fail (advisory)
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH

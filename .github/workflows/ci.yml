@@ -1,0 +1,174 @@
+# Continuous integration — lint, unit tests with coverage, and proto-stub
+# drift detection. Runs on every pull request and on every push to main.
+#
+# IMPORTANT: the test job deliberately does NOT install the heavy ML stack
+# (llamafirewall / torch / transformers). The `[dev]` extra in pyproject.toml
+# excludes ML deps so the unit tests run in regex-only mode, exercising the
+# engine's graceful fallback path when LlamaFirewall is absent.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (PRs re-push, main re-push).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Run ruff
+        # Equivalent to `make lint`.
+        run: ruff check guardrails server.py tests
+
+  test:
+    name: Unit tests + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dev deps + gRPC stack (no ML stack)
+        # The [dev] extra intentionally excludes llamafirewall/torch/transformers
+        # so CI stays fast (~30s install vs ~5min). The engine falls back to
+        # regex-only mode when LlamaFirewall import fails.
+        # NOTE: do NOT add llamafirewall or torch here — the unit tests pass in
+        # regex-only mode and keeping the ML stack out keeps CI fast.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install grpcio grpcio-tools grpcio-health-checking protobuf pyyaml
+
+      - name: Verify ML stack is NOT installed
+        # Guard rail: fail fast if a future change accidentally pulls torch in.
+        run: |
+          python - <<'PY'
+          import importlib.util as u
+          for mod in ("torch", "transformers", "llamafirewall"):
+              if u.find_spec(mod) is not None:
+                  raise SystemExit(f"FAIL: {mod} is installed in CI — test job must stay ML-free")
+          print("OK: no torch/transformers/llamafirewall in CI env")
+          PY
+
+      - name: Regenerate proto stubs (ensure committed copies exist & importable)
+        run: |
+          python -m grpc_tools.protoc -I proto \
+              --python_out=proto --grpc_python_out=proto \
+              proto/ext_mcp.proto
+
+      - name: Run pytest with coverage
+        # Equivalent to: make test + coverage xml for Codecov.
+        run: |
+          python -m pytest tests/ -q \
+              --cov=guardrails --cov=server --cov-report=xml --cov-report=term
+
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn
+
+      - name: Upload to Codecov
+        # Best-effort: skip when the token is not available (forks / dependabot).
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ env.CODECOV_TOKEN }}
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  proto-check:
+    name: Proto stub drift check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install grpcio-tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install "grpcio-tools>=1.62,<2" "protobuf>=4.25,<6"
+
+      - name: Regenerate stubs over committed copies
+        # We regenerate in place into proto/ and then diff against HEAD.
+        # If anything differs, the committed stubs are out of sync with
+        # proto/ext_mcp.proto and must be regenerated (`make proto`).
+        run: |
+          python -m grpc_tools.protoc -I proto \
+              --python_out=proto --grpc_python_out=proto \
+              proto/ext_mcp.proto
+
+      - name: Fail if committed stubs drifted
+        run: |
+          if ! git diff --exit-code -- proto/ext_mcp_pb2.py proto/ext_mcp_pb2_grpc.py; then
+            echo "::error::Committed proto stubs are out of sync with proto/ext_mcp.proto"
+            echo "::error::Run 'make proto' locally and commit the regenerated files."
+            exit 1
+          fi
+          echo "OK: committed stubs match proto/ext_mcp.proto"
+
+  # Single required-status-check target for branch protection. Branch
+  # protection can be configured to require only `ci-pass` instead of naming
+  # every individual job — when new jobs are added to this workflow, branch
+  # protection keeps working without manual edits.
+  ci-pass:
+    name: CI checks passed
+    runs-on: ubuntu-latest
+    needs: [lint, test, proto-check]
+    if: always()
+    steps:
+      - name: Verify all required jobs succeeded
+        # `needs` defaults to requiring success, but we set `if: always()` above
+        # so this step runs even if a dependency was skipped — explicit guard.
+        run: |
+          if [[ "${{ needs.lint.result }}" != "success" \
+             || "${{ needs.test.result }}" != "success" \
+             || "${{ needs.proto-check.result }}" != "success" ]]; then
+            echo "::error::One or more required CI jobs did not succeed"
+            echo "lint=${{ needs.lint.result }} test=${{ needs.test.result }} proto-check=${{ needs.proto-check.result }}"
+            exit 1
+          fi
+          echo "CI checks passed"

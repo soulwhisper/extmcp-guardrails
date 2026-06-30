@@ -1,0 +1,50 @@
+# Create a GitHub Release on push of v* tags.
+#
+# NOTE: GitHub Actions does not allow cross-workflow `needs:`, so this workflow
+# is independent of docker-publish.yml. The container image is built and pushed
+# by docker-publish.yml on the same tag-push event; this workflow only handles
+# the Release object + release notes. Both fire on `v*` tag pushes in parallel.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create / update GitHub Release
+        # The container image for this tag is published by docker-publish.yml
+        # (same `v*` tag trigger, parallel workflow). This step only creates
+        # the GitHub Release object with auto-generated notes.
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## ExtMcp Guardrail ${{ github.ref_name }}
+
+            **Container image:** published by `docker-publish.yml` on this same
+            tag trigger. Pull with:
+
+            ```sh
+            docker pull ghcr.io/soulwhisper/extmcp-guardrail:${{ github.ref_name }}
+            ```
+
+            (The `v` prefix is stripped by docker/metadata-action's semver
+            pattern, so `v0.1.0` produces the image tag `0.1.0` + `latest`.)

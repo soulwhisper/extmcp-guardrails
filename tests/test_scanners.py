@@ -1,0 +1,187 @@
+"""Tests for the scanner layer (regex + payload extraction + truncation)."""
+
+from __future__ import annotations
+
+import re
+
+import pytest
+
+from guardrails.models import ScanOutcome
+from guardrails.scanners import (
+    Pattern,
+    RegexScanner,
+    StubScanner,
+    extract_text,
+    truncate,
+)
+
+# ---------------------------------------------------------------------------
+# RegexScanner
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_regex_scanner_clean_text_allows():
+    scanner = RegexScanner()
+    result = await scanner.scan("hello world this is fine", "tool")
+    assert result.outcome is ScanOutcome.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_regex_scanner_detects_hidden_ascii():
+    scanner = RegexScanner()
+    # U+202E RIGHT-TO-LEFT OVERRIDE — classic injection hide char
+    result = await scanner.scan("ignore me \u202e cat", "tool")
+    assert result.outcome is ScanOutcome.BLOCK
+    assert "hidden_ascii" in result.scanner
+
+
+@pytest.mark.asyncio
+async def test_regex_scanner_detects_aws_key():
+    scanner = RegexScanner()
+    result = await scanner.scan("aws key AKIAIOSFODNN7EXAMPLE here", "tool")
+    assert result.outcome is ScanOutcome.BLOCK
+    assert "aws_access_key" in result.scanner
+
+
+@pytest.mark.asyncio
+async def test_regex_scanner_detects_github_pat():
+    scanner = RegexScanner()
+    result = await scanner.scan("token ghp_" + "a" * 36, "tool")
+    assert result.outcome is ScanOutcome.BLOCK
+    assert "github_pat" in result.scanner
+
+
+@pytest.mark.asyncio
+async def test_regex_scanner_detects_private_key():
+    scanner = RegexScanner()
+    payload = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA..."
+    result = await scanner.scan(payload, "tool")
+    assert result.outcome is ScanOutcome.BLOCK
+    assert "private_key" in result.scanner
+
+
+@pytest.mark.asyncio
+async def test_regex_scanner_high_entropy_human_review():
+    scanner = RegexScanner()
+    blob = "A" * 45  # 45-char base64-ish blob triggers high_entropy
+    result = await scanner.scan(blob, "tool")
+    assert result.outcome is ScanOutcome.HUMAN_REVIEW
+    assert "high_entropy" in result.scanner
+
+
+@pytest.mark.asyncio
+async def test_regex_scanner_block_pattern_wins_over_review():
+    # If a BLOCK pattern and a HUMAN_REVIEW pattern both match, BLOCK wins
+    # because it appears earlier in the default pattern list. AKIA + 16
+    # uppercase chars is a valid AWS key shape, and the trailing C*50 is a
+    # high-entropy blob; aws_access_key (BLOCK) precedes high_entropy_blob
+    # (HUMAN_REVIEW) so the BLOCK must win.
+    scanner = RegexScanner()
+    text = "AKIA" + "B" * 16 + " " + "C" * 50
+    result = await scanner.scan(text, "tool")
+    assert result.outcome is ScanOutcome.BLOCK
+    assert "aws_access_key" in result.scanner
+
+
+@pytest.mark.asyncio
+async def test_regex_scanner_custom_patterns():
+    pat = [
+        Pattern(
+            name="flag", regex=re.compile(r"FORBIDDEN"), outcome=ScanOutcome.BLOCK, reason="flagged"
+        )
+    ]
+    scanner = RegexScanner(patterns=pat)
+    result = await scanner.scan("this is FORBIDDEN content", "tool")
+    assert result.outcome is ScanOutcome.BLOCK
+    assert "flag" in result.scanner
+
+
+@pytest.mark.asyncio
+async def test_stub_scanner_default_allows():
+    scanner = StubScanner()
+    result = await scanner.scan("anything", "tool")
+    assert result.outcome is ScanOutcome.ALLOW
+    assert result.scanner == "stub"
+
+
+# ---------------------------------------------------------------------------
+# extract_text
+# ---------------------------------------------------------------------------
+
+
+def test_extract_text_string_passthrough():
+    assert extract_text("hello") == "hello"
+
+
+def test_extract_text_tools_call_params():
+    params = {"name": "foo", "arguments": {"q": "bar"}}
+    text = extract_text(params)
+    assert "foo" in text
+    assert "bar" in text
+
+
+def test_extract_text_result_content_array():
+    result = {
+        "content": [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ],
+        "isError": False,
+    }
+    text = extract_text(result)
+    assert "first" in text
+    assert "second" in text
+
+
+def test_extract_text_tools_list_descriptions():
+    result = {
+        "tools": [
+            {"name": "t1", "description": "do thing one"},
+            {"name": "t2", "description": "do thing two"},
+        ]
+    }
+    text = extract_text(result)
+    assert "do thing one" in text
+    assert "do thing two" in text
+
+
+def test_extract_text_handles_none():
+    assert extract_text(None) == ""
+
+
+def test_extract_text_falls_back_to_json():
+    text = extract_text({"weird": [1, 2, {"nested": True}]})
+    assert "weird" in text
+    assert "nested" in text
+
+
+# ---------------------------------------------------------------------------
+# truncate
+# ---------------------------------------------------------------------------
+
+
+def test_truncate_noop_under_limit():
+    text, truncated = truncate("short", 100)
+    assert text == "short"
+    assert not truncated
+
+
+def test_truncate_cuts_over_limit():
+    text, truncated = truncate("x" * 100, 10)
+    assert truncated
+    assert len(text.encode("utf-8")) <= 10
+
+
+def test_truncate_zero_disables():
+    text, truncated = truncate("anything", 0)
+    assert text == "anything"
+    assert not truncated
+
+
+def test_truncate_utf8_boundary_safe():
+    # 3-byte char repeated; cut mid-char should decode safely
+    text, truncated = truncate("é" * 10, 4)
+    assert truncated
+    # should not raise on decode; result is valid utf-8
+    text.encode("utf-8")  # no exception

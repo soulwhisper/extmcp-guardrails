@@ -1,0 +1,246 @@
+"""Example Invariant toxic-flow rule pack.
+
+This file is a self-contained Python module that exposes a module-level
+``RULES`` list. It can be loaded by the guardrail sidecar via:
+
+    INVARIANT_RULES_PATH=/etc/guardrails/rules.policy
+
+(or any path passed to ``guardrails.rules.load_rules(path=...)``).
+
+A rule is any object exposing:
+
+    name: str
+    def match(self, trace: Sequence[TraceEntry]) -> Optional[str]
+
+The bundle ships two concrete rule types you compose packs from:
+
+* ``ToxicFlowRule`` — an *ordered subsequence* of tool calls (steps need not
+  be contiguous in the trace; intervening calls are allowed). Use this for
+  "X then Y" exfiltration / escalation patterns.
+
+* ``LoopRule`` — fires when the *same* (tool, args) fingerprint repeats
+  ``threshold`` times within the sliding window. Use this for
+  prompt-injection retry loops hammering a denied tool.
+
+Each ``FlowStep`` carries:
+
+* ``tool``     — matcher for the MCP tool name (``params["name"]``). A bare
+                 string is an exact match; a string containing regex
+                 meta-characters (``^$.*+?[]()|``) is treated as a regex;
+                 a compiled ``re.Pattern`` is searched; a callable is
+                 invoked.
+* ``args``     — optional mapping of argument-path -> value matcher. Paths
+                 use dot notation for nested fields (``to.address``) and
+                 accept integer list indices (``recipients.0.address``).
+                 Value matchers follow the same regex-vs-literal heuristic
+                 as tool matchers, plus callables for arbitrary predicates.
+* ``args_any`` — if True, the step ignores args (only the tool name is
+                 checked). Defaults to False; when ``args`` is empty the
+                 step also matches any args.
+
+Rule order in ``RULES`` is priority order — first match wins in
+``InvariantEngine.evaluate``.
+
+Reload this pack without restarting the sidecar by sending SIGHUP to the
+server process (``kill -HUP $(pidof python)`` from inside the container).
+"""
+
+from __future__ import annotations
+
+import re
+
+from guardrails.invariant import FlowStep, LoopRule, ToxicFlowRule
+
+
+# ---------------------------------------------------------------------------
+# Shared matchers
+# ---------------------------------------------------------------------------
+
+# Matches any address that does NOT end with a small set of internal suffixes.
+# Used to flag "external" recipients in inbox->email exfiltration.
+_EXTERNAL_EMAIL = re.compile(
+    r"^[^@\s]+@(?!(internal\.local|corp\.local|example\.org|cluster\.local)$)"
+    r"[^@\s]+\.[^@\s]+$"
+)
+
+# External URLs — anything not on RFC1918 / loopback / cluster-internal.
+# Used to flag "exfil to the internet" patterns.
+_EXTERNAL_URL = re.compile(
+    r"^https?://(?!localhost|127\.0\.0\.1|10\.|192\.168\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|.*\.svc\.cluster\.local)"
+)
+
+# Match tools whose name suggests shell execution.
+_SHELL_TOOL = re.compile(r"(shell|bash|exec|terminal|cmd|sh)_?", re.IGNORECASE)
+
+# Match Kubernetes apply/patch tools.
+_K8S_APPLY_TOOL = re.compile(r"(kubernetes|k8s|kubectl|helm).*(_?apply|_?patch|_?create|_?replace)", re.IGNORECASE)
+
+# Match secret-read tools (vault, k8s secret, cloud secrets managers).
+_SECRET_READ_TOOL = re.compile(
+    r"(secret|vault|kms|aws_secrets?|gcp_secrets?|az.*keyvault).*(_?read|_?get|_?fetch|_?access)",
+    re.IGNORECASE,
+)
+
+# Match HTTP egress tools (any method, since GET can carry data in path/query).
+_HTTP_EGRESS_TOOL = re.compile(r"(http|curl|fetch|webhook|requests?|wget)", re.IGNORECASE)
+
+# Match generic database dump / bulk-read tools.
+_DB_DUMP_TOOL = re.compile(r"(database|db|sql|postgres|mysql|mongo).*(_?dump|_?export|_?query_all|_?select_\*)", re.IGNORECASE)
+
+# Match generic file-read tools.
+_FILE_READ_TOOL = re.compile(r"(file|fs|read).*(_?read|_?get|_?cat)", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Rules
+# ---------------------------------------------------------------------------
+
+RULES = [
+    # 1. Inbox -> external email (classic data exfiltration via an email tool).
+    #    Step 1: any inbox_read call (we don't care which mailbox).
+    #    Step 2: email_send whose "to" recipient is outside the internal domain
+    #            allowlist. Demonstrates a callable value matcher.
+    ToxicFlowRule(
+        name="inbox-to-external-email",
+        description=(
+            "Read an inbox then send email to an external recipient "
+            "(data exfiltration via mail tool)"
+        ),
+        steps=[
+            FlowStep(tool="inbox_read"),
+            FlowStep(
+                tool="email_send",
+                args={
+                    "to": lambda v: isinstance(v, str) and bool(_EXTERNAL_EMAIL.search(v)),
+                },
+            ),
+        ],
+    ),
+
+    # 2. Secret-read -> HTTP egress (exfiltration to an external endpoint).
+    #    Demonstrates regex tool matchers and a dotted-path arg matcher:
+    #    the URL lives at args["request"]["url"] (a common HTTP-tool shape).
+    #    Both regex-typed and re.Pattern-typed tool matchers are shown.
+    ToxicFlowRule(
+        name="secret-read-then-http-exfil",
+        description=(
+            "Read a secret (vault/k8s/cloud) then POST it to an external "
+            "HTTP endpoint (credential exfiltration)"
+        ),
+        steps=[
+            FlowStep(tool=_SECRET_READ_TOOL),
+            FlowStep(
+                tool=_HTTP_EGRESS_TOOL,
+                args={
+                    # Dotted path: resolves nested dict/list structures.
+                    "request.url": _EXTERNAL_URL,
+                    # Fallback for tools that take url at the top level.
+                    "url": _EXTERNAL_URL,
+                },
+            ),
+        ],
+    ),
+
+    # 3. Shell -> privileged k8s apply (privilege escalation via the cluster).
+    #    The dangerous step is gated on the manifest content carrying one of a
+    #    short list of red-flag tokens (cluster-admin, privileged, hostPath,
+    #    hostPID, hostNetwork). Uses a callable for the manifest predicate.
+    ToxicFlowRule(
+        name="shell-then-k8s-privileged-apply",
+        description=(
+            "Run a shell command then apply a privileged k8s manifest "
+            "(privilege escalation into the cluster)"
+        ),
+        steps=[
+            FlowStep(tool=_SHELL_TOOL),
+            FlowStep(
+                tool=_K8S_APPLY_TOOL,
+                args={
+                    "manifest": lambda v: isinstance(v, str)
+                    and any(
+                        tok in v
+                        for tok in (
+                            "cluster-admin",
+                            "privileged",
+                            "hostPath",
+                            "hostPID",
+                            "hostNetwork",
+                            "hostIPC",
+                        )
+                    ),
+                },
+            ),
+        ],
+    ),
+
+    # 4. DB dump -> external upload (bulk PII / data exfiltration).
+    #    Demonstrates two different external-egress tools — either an
+    #    http upload or an s3/gcs put. Multiple FlowSteps with overlapping
+    #    tools are fine; the subsequence matcher advances on the first match.
+    ToxicFlowRule(
+        name="db-dump-then-external-upload",
+        description=(
+            "Bulk-read a database then upload the dump to an external "
+            "storage/HTTP endpoint (bulk data exfiltration)"
+        ),
+        steps=[
+            FlowStep(tool=_DB_DUMP_TOOL),
+            FlowStep(
+                # Regex string (not compiled) — the loader treats strings
+                # containing regex meta-characters as regex search patterns.
+                tool=r"(s3|gcs|azure_blob|oss).*(_?put|_?upload|_?write)",
+                args={
+                    "bucket": lambda v: isinstance(v, str) and not v.startswith("internal-"),
+                    "url": _EXTERNAL_URL,
+                },
+            ),
+        ],
+    ),
+
+    # 5. File-read -> webhook (creative: a less-obvious exfil channel).
+    #    Demonstrates a regex-string tool matcher (note the dot in the tool
+    #    regex), a callable tool matcher on the second step, and dotted-path
+    #    arg matchers across a nested request body.
+    ToxicFlowRule(
+        name="file-read-then-webhook-exfil",
+        description=(
+            "Read a file then fire a webhook to an external URL carrying "
+            "the file contents in the body (side-channel exfiltration)"
+        ),
+        steps=[
+            FlowStep(
+                # Regex-string tool matcher: any tool starting with file/fs/read.
+                tool=r"^(file|fs|read)_.*",
+                args={
+                    # Only fire on file reads outside the agent's working dir.
+                    "path": lambda v: isinstance(v, str)
+                    and not v.startswith(("/app/work/", "/tmp/agent/")),
+                },
+            ),
+            FlowStep(
+                # Callable tool matcher for full control.
+                tool=lambda name: "webhook" in name.lower() or name.endswith("_notify"),
+                args={
+                    # Dotted path into a nested request envelope.
+                    "request.url": _EXTERNAL_URL,
+                    "request.method": re.compile(r"^(POST|PUT|PATCH)$", re.IGNORECASE),
+                },
+            ),
+        ],
+    ),
+
+    # 6. Retry storm (prompt-injection signature: a compromised agent hammering
+    #    the same denied tool over and over hoping a guardrail hiccups).
+    #    LoopRule fires on identical (tool, args) fingerprints within the
+    #    window — a parameterised search (args differ each call) does NOT
+    #    fire, which is what distinguishes a genuine retry loop from normal
+    #    agent exploration.
+    LoopRule(
+        name="denied-tool-retry-storm",
+        threshold=5,
+        description=(
+            "Same tool+arguments repeated 5+ times in the window "
+            "(injection retry loop)"
+        ),
+    ),
+]

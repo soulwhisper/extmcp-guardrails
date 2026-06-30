@@ -1,0 +1,107 @@
+name: Bug report
+description: Report a defect in extmcp-guardrail (false allow, false deny, crash, performance, etc.)
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in every
+        section. Security-sensitive issues (e.g. a payload that bypasses a
+        deny rule) can also be reported privately — see SECURITY.md if present.
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How bad is this?
+      options:
+        - Blocker (traffic wrongly allowed / denied in prod)
+        - High (crash / hang under realistic load)
+        - Medium (wrong audit log / misleading metric)
+        - Low (cosmetic / docs)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - False negative (deny rule didn't fire)
+        - False positive (deny rule fired when it shouldn't)
+        - Mutation (request/response wrongly rewritten)
+        - Crash / panic
+        - Performance
+        - Audit / observability
+        - proto / wire compat
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Guardrail version / image tag
+      placeholder: "0.1.0  or  ghcr.io/soulwhisper/extmcp-guardrail:0.1.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: How is the guardrail deployed? K8s manifest excerpt, env vars, agentgateway version.
+      placeholder: |
+        - Deployment: k8s sidecar / standalone / docker run
+        - agentgateway version:
+        - Relevant env: LISTEN_ADDR, FAILURE_MODE, HUMAN_REVIEW_MODE,
+          ENABLE_REGEX_SCANNER, ENABLE_LLAMAFIREWALL, INVARIANT_RULES_*
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal payload + rule pack that triggers the bug. Redact secrets.
+      placeholder: |
+        1. Send this McpRequest via grpcurl:
+           `...`
+        2. With this rule pack:
+           `...`
+        3. Expected: deny (regex X matches)
+        4. Actual: allowed
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the audit-log JSONL line if available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / audit output
+      render: shell
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+
+        Thanks for the bug report! A maintainer will triage and label. If this
+        is a security-relevant bypass (a payload that should be denied but
+        isn't), please also consider reporting it privately via the security
+        contact so we can fix it before public disclosure.
