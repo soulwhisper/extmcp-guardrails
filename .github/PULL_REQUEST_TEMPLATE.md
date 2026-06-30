@@ -1,5 +1,5 @@
 <!--
-Thanks for contributing to extmcp-guardrail! Please fill in every section.
+Thanks for contributing to extmcp-guardrails! Please fill in every section.
 PRs that change deny / mutation behaviour or the wire contract need extra
 scrutiny — flag those explicitly in the Guardrail-policy impact section.
 -->
@@ -69,4 +69,3 @@ wire-compat with agentgateway. -->
 - [ ] **No secrets / PII** in this PR, in code, logs, or rule packs.
 - [ ] **Branch protection** — `ci-pass` (from ci.yml) and the `e2e` (pr.yml)
       status checks are green on this PR.
-

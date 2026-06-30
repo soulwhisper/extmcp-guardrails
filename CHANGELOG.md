@@ -20,7 +20,7 @@ ExtMcp gRPC contract as a fail-closed policy sidecar.
 
 - **ExtMcp gRPC servicer** (`guardrails/servicer.py`) implementing the
   agentgateway ExtMcp v1alpha1 contract: `CheckRequest(McpRequest) ->
-  McpRequestResult` and `CheckResponse(McpResponse) -> McpResponseResult`.
+McpRequestResult` and `CheckResponse(McpResponse) -> McpResponseResult`.
   Both return one of `allowed` (Pass), `mutated` (Mutated), or `error`
   (AuthorizationError) via a protobuf `oneof`. Malformed JSON-RPC payloads
   map to `INVALID_ARGUMENT`; policy denies map to `PERMISSION_DENIED`
@@ -70,8 +70,8 @@ ExtMcp gRPC contract as a fail-closed policy sidecar.
     optional second-stage AgentAlignment gated on first-stage
     `HUMAN_REVIEW` (cost control for the LLM-based alignment check).
   - Per-scanner `asyncio.wait_for` deadline (`SCANNER_TIMEOUT_MS`);
-  exceptions and timeouts translated per `FAILURE_MODE` (failClosed ->
-  BLOCK, failOpen -> HUMAN_REVIEW).
+    exceptions and timeouts translated per `FAILURE_MODE` (failClosed ->
+    BLOCK, failOpen -> HUMAN_REVIEW).
 - **Rule pack loader** (`guardrails/rules/__init__.py`): resolution
   order `INVARIANT_RULES_PATH` (filesystem, hot-reloadable via SIGHUP) >
   `INVARIANT_RULES_MODULE` (dotted Python path) >
@@ -112,7 +112,7 @@ ExtMcp gRPC contract as a fail-closed policy sidecar.
   (air-gappable, fast cold-start), non-root UID/GID 65532, `EXPOSE 9001`,
   inline-Python `grpc.health.v1` healthcheck (zero extra system deps).
   Image published as
-  `ghcr.io/soulwhisper/extmcp-guardrail:0.1.0` (multi-arch
+  `ghcr.io/soulwhisper/extmcp-guardrails:0.1.0` (multi-arch
   linux/amd64 + linux/arm64).
 - **Kubernetes manifests** (`deploy/k8s/`): Namespace, ConfigMap rule
   pack, 2-replica Deployment (fail-closed env, 500m/2Gi request,
@@ -155,13 +155,13 @@ ExtMcp gRPC contract as a fail-closed policy sidecar.
   hidden Unicode) + `CheckResponse` (deny on private key) + malformed
   `INVALID_ARGUMENT`.
 - **Docs**: `README.md` (front door with env-var table, Mermaid sequence
-  + flowchart diagrams, quick start, deployment, security model),
-  `ARCHITECTURE.md` (deep dive: proto contract, request / response
-  lifecycles, aggregator table, invariant engine, failure handling,
-  observability, image build, homelab cost tradeoffs),
-  `CONTRIBUTING.md` (dev workflow, proto-stub sync rule, scanner / rule
-  extension guide, DCO, release process), `CHANGELOG.md` (this file),
-  `LICENSE` (Apache-2.0).
+  - flowchart diagrams, quick start, deployment, security model),
+    `ARCHITECTURE.md` (deep dive: proto contract, request / response
+    lifecycles, aggregator table, invariant engine, failure handling,
+    observability, image build, homelab cost tradeoffs),
+    `CONTRIBUTING.md` (dev workflow, proto-stub sync rule, scanner / rule
+    extension guide, DCO, release process), `CHANGELOG.md` (this file),
+    `LICENSE` (Apache-2.0).
 
 ### Security
 
@@ -178,5 +178,5 @@ ExtMcp gRPC contract as a fail-closed policy sidecar.
   not rely on headers for authn/authz when
   `metadata_context.upstream_transport == "stdio"`.
 
-[Unreleased]: https://github.com/soulwhisper/extmcp-guardrail/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/soulwhisper/extmcp-guardrail/releases/tag/v0.1.0
+[Unreleased]: https://github.com/soulwhisper/extmcp-guardrails/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/soulwhisper/extmcp-guardrails/releases/tag/v0.1.0

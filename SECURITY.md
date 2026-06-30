@@ -9,7 +9,7 @@ Email the maintainer privately at **`security@soulwhisper.dev`** with:
 
 - a description of the issue,
 - the version / image tag you are running
-  (`ghcr.io/soulwhisper/extmcp-guardrail:<tag>`),
+  (`ghcr.io/soulwhisper/extmcp-guardrails:<tag>`),
 - the relevant configuration (env vars; redact secrets),
 - a minimal repro if possible.
 

@@ -52,7 +52,7 @@ class Observability:
     def __init__(
         self,
         *,
-        service_name: str = "extmcp-guardrail",
+        service_name: str = "extmcp-guardrails",
         otel_endpoint: str | None = None,
         audit_path: str | None = None,
     ):

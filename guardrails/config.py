@@ -62,7 +62,7 @@ class GuardrailConfig:
 
     # --- Observability ---
     otel_endpoint: str | None = None
-    otel_service_name: str = "extmcp-guardrail"
+    otel_service_name: str = "extmcp-guardrails"
     audit_log_path: str | None = None
 
     # --- Misc ---
@@ -97,7 +97,7 @@ class GuardrailConfig:
             listen_addr=os.environ.get("LISTEN_ADDR", "[::]:9001"),
             server_max_workers=_env_int("SERVER_MAX_WORKERS", 8),
             otel_endpoint=otel,
-            otel_service_name=os.environ.get("OTEL_SERVICE_NAME", "extmcp-guardrail"),
+            otel_service_name=os.environ.get("OTEL_SERVICE_NAME", "extmcp-guardrails"),
             audit_log_path=os.environ.get("AUDIT_LOG_PATH") or None,
             dry_run=_env_bool("GUARDRAIL_DRY_RUN", False),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
