@@ -1,0 +1,27 @@
+# CODEOWNERS for extmcp-guardrail.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Default owner for everything in the repo.
+* @soulwhisper
+
+# ---------------------------------------------------------------------------
+# Security-sensitive paths — changes here alter deny / mutation behaviour and
+# SHOULD be reviewed by a security-aware maintainer. For now that's the same
+# single owner, but as the project grows consider adding a @soulwhisper/security
+# team here so these paths get an explicit second pair of eyes.
+# ---------------------------------------------------------------------------
+# Guardrail rule packs — these define what gets denied / mutated at runtime.
+/guardrails/rules/                 @soulwhisper
+
+# Aggregator + engine — fail-closed/fail-open + mutation-passthrough policy.
+/guardrails/aggregator.py          @soulwhisper
+/guardrails/engine.py              @soulwhisper
+
+# Invariant engine — toxic-flow + loop-detection rules.
+/guardrails/invariant.py           @soulwhisper
+
+# Regex scanner patterns — the actual deny regexes.
+/guardrails/scanners.py            @soulwhisper
+
+# Wire contract — any change here is a breaking API change.
+/proto/                            @soulwhisper

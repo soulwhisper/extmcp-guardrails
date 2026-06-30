@@ -1,0 +1,171 @@
+# ConfigMap holding the Invariant rule pack consumed by the guardrail sidecar.
+#
+# The `rules.policy` key is mounted at /etc/guardrails/rules.policy (read-only)
+# and pointed at by env var INVARIANT_RULES_PATH. The guardrail loads it at
+# startup via guardrails.rules.load_rules(path=...) and hot-reloads it on
+# SIGHUP — so to roll out a new rule pack, edit this ConfigMap, wait for the
+# kubelet to refresh the mount (or bump the Pod), and send SIGHUP.
+#
+# The Python file is plain source: it must define a module-level `RULES = [...]`
+# list whose entries are ToxicFlowRule / LoopRule instances (or any object with
+# a `name` attribute and a `match(trace) -> Optional[str]` callable).
+#
+# `scanners-config` is a documentation-only key: the scanner subsystem is
+# configured entirely via env vars on the Deployment (see deployment.yaml),
+# NOT via this file. It exists here so operators have a single ConfigMap to
+# read when reasoning about guardrail behaviour.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guardrail-rules
+  namespace: agent-system
+  labels:
+    app: extmcp-guardrail
+    component: guardrail
+    app.kubernetes.io/name: extmcp-guardrail
+    app.kubernetes.io/component: rules
+    app.kubernetes.io/part-of: agentgateway
+    app.kubernetes.io/managed-by: kustomize
+data:
+  # The rule pack — see guardrails/invariant.py for matcher semantics.
+  # FlowStep.tool accepts: exact string, compiled regex, or callable.
+  # FlowStep.args is a mapping of dotted-path -> value matcher
+  #   (callable, compiled regex, or literal compared with ==).
+  # ToxicFlowRule fires on an ordered *subsequence* match within the
+  # INVARIANT_WINDOW (default 64 calls). Steps need not be contiguous.
+  # LoopRule fires when the same (tool + args) fingerprint repeats
+  # `threshold` times within the window.
+  rules.policy: |
+    """Invariant rule pack for the ExtMcp guardrail sidecar.
+
+    Loaded at startup from /etc/guardrails/rules.policy via
+    `guardrails.rules.load_rules(path=...)` and hot-reloaded on SIGHUP.
+
+    These rules are illustrative of the highest-leverage exfiltration /
+    escalation patterns a compromised agent could attempt once it has tool
+    access. Extend or override by editing this ConfigMap — the engine
+    re-evaluates the entire pack on every tool call, so new rules take effect
+    immediately after the SIGHUP reload.
+    """
+
+    from __future__ import annotations
+
+    import re
+
+    from guardrails.invariant import FlowStep, LoopRule, ToxicFlowRule
+
+    # Recipients NOT ending in these internal suffixes are treated as external.
+    # Add your own corporate domains here to widen the trusted set.
+    _INTERNAL_EMAIL_SUFFIXES = ("internal.local", "corp.local", "example.org")
+    _EXTERNAL_EMAIL = re.compile(
+        r"^[^@\s]+@(?!" + "|".join(_INTERNAL_EMAIL_SUFFIXES) + r"$)[^@\s]+\.[^@\s]+$"
+    )
+
+    # Internal/cluster-local hosts that are NOT considered exfiltration
+    # destinations. Anything else over HTTP(S) is suspect.
+    _INTERNAL_HOSTS = re.compile(
+        r"^https?://("
+        r"localhost|127\.0\.0\.1|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|"
+        r".*\.svc\.cluster\.local|.*\.internal"
+        r")"
+    )
+
+    RULES = [
+        # ------------------------------------------------------------------
+        # 1) inbox -> external-email exfiltration.
+        #    A compromised agent reads the user's inbox and then mails the
+        #    harvested contents to an attacker-controlled address. The first
+        #    step is benign in isolation (reading mail is a normal task); the
+        #    *sequence* is the smoking gun, which is exactly what
+        #    ToxicFlowRule is designed to catch.
+        # ------------------------------------------------------------------
+        ToxicFlowRule(
+            name="inbox-to-external-email",
+            description=(
+                "Read an inbox then send email to an external recipient "
+                "(data exfiltration via the mail tool)"
+            ),
+            steps=[
+                FlowStep(tool=re.compile(r"(inbox|mail|gmail).*read", re.IGNORECASE)),
+                FlowStep(
+                    tool=re.compile(r"(email|mail|smtp).*send", re.IGNORECASE),
+                    args={
+                        "to": lambda v: isinstance(v, str) and bool(_EXTERNAL_EMAIL.search(v)),
+                    },
+                ),
+            ],
+        ),
+        # ------------------------------------------------------------------
+        # 2) secret-read -> http-exfil exfiltration.
+        #    The agent pulls a secret from vault/k8s/aws-secrets-manager and
+        #    then POSTs it to an external HTTP endpoint. The second step's
+        #    `url` arg must NOT match an internal host for the rule to fire,
+        #    so legitimate "push this secret to the internal secret-store"
+        #    flows are not blocked.
+        # ------------------------------------------------------------------
+        ToxicFlowRule(
+            name="secret-read-then-http-exfil",
+            description=(
+                "Read a secret then POST it to an external HTTP endpoint "
+                "(credential exfiltration)"
+            ),
+            steps=[
+                FlowStep(
+                    tool=re.compile(
+                        r"(secret|vault|kms|secretsmanager|aws_secrets|k8s_secret).*"
+                        r"(read|get|fetch|access)",
+                        re.IGNORECASE,
+                    )
+                ),
+                FlowStep(
+                    tool=re.compile(r"(http|curl|fetch|webhook|requests).*post", re.IGNORECASE),
+                    args={
+                        "url": lambda v: (
+                            isinstance(v, str)
+                            and not _INTERNAL_HOSTS.search(v)
+                        ),
+                    },
+                ),
+            ],
+        ),
+        # ------------------------------------------------------------------
+        # 3) prompt-injection retry loop.
+        #    A prompt-injected agent that has been told "keep trying until it
+        #    works" will often hammer the same denied tool with identical
+        #    arguments. LoopRule fingerprints (tool + sorted-args JSON) and
+        #    fires on `threshold` repeats within the window. 3 is a tight
+        #    threshold; bump to 5 if legitimate retry flows (e.g. flaky
+        #    network) cause false positives.
+        # ------------------------------------------------------------------
+        LoopRule(
+            name="denied-tool-retry-loop",
+            threshold=3,
+            description=(
+                "Same tool + arguments called 3+ times in the window "
+                "(prompt-injection retry signature)"
+            ),
+        ),
+    ]
+  # Documentation-only key: the scanner subsystem is env-driven, not file-driven.
+  # See deployment.yaml for the env vars that map to each scanner toggle / limit.
+  scanners-config: |
+    # Scanner configuration is env-driven (see guardrails/config.py).
+    # This key exists purely as in-cluster documentation — it is NOT consumed
+    # by the sidecar at runtime.
+    #
+    # Relevant env vars (set on the Deployment):
+    #   ENABLE_REGEX_SCANNER   - toggle the regex-based secrets/PII/hidden-ascii scanner
+    #   ENABLE_LLAMAFIREWALL   - toggle the PromptGuard-2 semantic scanner
+    #   ENABLE_AGENT_ALIGNMENT - toggle the LLM-based AgentAlignment second stage
+    #                            (only runs when PromptGuard returns HUMAN_REVIEW;
+    #                            default off for homelab latency budget)
+    #   MAX_CONTENT_BYTES      - per-call text budget fed to each scanner
+    #                            (excess is truncated + flagged in the audit span)
+    #   SCANNER_TIMEOUT_MS     - per-engine-call deadline; exceeded -> failure_mode
+    #   INVARIANT_WINDOW       - sliding-window size for ToxicFlowRule / LoopRule
+    #   FAILURE_MODE           - failClosed (default) | failOpen
+    #   HUMAN_REVIEW_MODE      - pass (default) | deny
+    #
+    # The rule pack above is the ONLY file-driven config; everything else is
+    # knobs on the container env.

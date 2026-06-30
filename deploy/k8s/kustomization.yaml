@@ -1,0 +1,27 @@
+# Kustomize manifest for the ExtMcp guardrail sidecar.
+#
+# Apply the whole stack with:
+#   kubectl apply -k deploy/k8s/
+#
+# Or render to a single static manifest with:
+#   kubectl kustomize deploy/k8s/ > bundle.yaml
+#
+# Resources are listed in dependency order (namespace first, then the
+# resources that live in it), though kubectl server-side apply will resolve
+# order itself.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+metadata:
+  name: extmcp-guardrail
+commonLabels:
+  app.kubernetes.io/name: extmcp-guardrail
+  app.kubernetes.io/part-of: agentgateway
+  app.kubernetes.io/managed-by: kustomize
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - agentgateway-policy.yaml
+  - hpa.yaml
+  - pdb.yaml

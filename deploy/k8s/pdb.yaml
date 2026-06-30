@@ -1,0 +1,34 @@
+# PodDisruptionBudget for the ExtMcp guardrail.
+#
+# minAvailable: 1 guarantees that at least one healthy guardrail Pod is
+# always schedulable during voluntary disruptions (node drains, cluster
+# autoscaler scale-down, kubectl rollout). This complements the Deployment's
+# replicas: 2 + maxUnavailable: 0 rolling-update strategy, which already
+# refuses to remove a Pod during rollout if it would drop us below 2.
+#
+# Combined with failureMode: FailClosed in agentgateway-policy.yaml, this
+# means: during a voluntary disruption, at least one guardrail Pod stays up,
+# so agentgateway can always reach a guardrail and (because FailClosed) any
+# call that *cannot* reach it is blocked rather than passed through.
+#
+# Involuntary disruptions (node failure, OOMKill) are not covered by a PDB —
+# they're covered by replicas: 2 + anti-affinity (TODO: add topology spread
+# constraints if you want hard multi-AZ guarantees).
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: extmcp-guardrail
+  namespace: agent-system
+  labels:
+    app: extmcp-guardrail
+    component: guardrail
+    app.kubernetes.io/name: extmcp-guardrail
+    app.kubernetes.io/component: pdb
+    app.kubernetes.io/part-of: agentgateway
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: extmcp-guardrail

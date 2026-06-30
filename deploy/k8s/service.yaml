@@ -1,0 +1,43 @@
+# Service exposing the ExtMcp guardrail Deployment.
+#
+# *** HARD REQUIREMENT: appProtocol: kubernetes.io/h2c ***
+#
+# agentgateway uses the Service's `appProtocol` field to decide how to dial the
+# backend. The guardrail speaks plaintext HTTP/2 gRPC (h2c — HTTP/2 cleartext,
+# no TLS), so the Service MUST advertise `kubernetes.io/h2c`. With any other
+# value (or no appProtocol), agentgateway will either try TLS (and fail) or
+# treat the backend as HTTP/1.1 (and break the gRPC stream).
+#
+# `kubernetes.io/h2c` is the canonical appProtocol for plaintext HTTP/2 and is
+# recognised by agentgateway, Istio, and the upstream Kubernetes appProtocol
+# conventions. Do not change it without also changing the sidecar's listener
+# to match (e.g. adding TLS and switching to `kubernetes.io/grpc`).
+#
+# The Service port (4445) is decoupled from the container port (9001) so the
+# gateway can be re-pointed at a different port without rebuilding the image;
+# the agentgateway-policy.yaml backendRef references this Service port.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: extmcp-guardrail
+  namespace: agent-system
+  labels:
+    app: extmcp-guardrail
+    component: guardrail
+    app.kubernetes.io/name: extmcp-guardrail
+    app.kubernetes.io/component: service
+    app.kubernetes.io/part-of: agentgateway
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  type: ClusterIP
+  selector:
+    app: extmcp-guardrail
+  ports:
+    - name: grpc-h2c
+      port: 4445
+      targetPort: grpc-h2c
+      protocol: TCP
+      # HARD REQUIREMENT — see comment above. agentgateway will not connect
+      # to a plaintext HTTP/2 backend without this exact appProtocol value.
+      appProtocol: kubernetes.io/h2c
