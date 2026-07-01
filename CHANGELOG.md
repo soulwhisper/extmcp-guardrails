@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Docker build broke** with `httpx.UnsupportedProtocol: Request URL is
+  missing an 'http://' or 'https://' protocol`. The empty `HF_ENDPOINT`
+  build-arg (the default when no mirror is configured) leaked into the build
+  env as `HF_ENDPOINT=""`, which `huggingface_hub` picked up instead of its
+  built-in default endpoint. The models stage now `unset`s `HF_ENDPOINT` when
+  empty so the hub falls back to `https://huggingface.co` (a real mirror is
+  still honoured when provided).
+
 ### Changed
 
 - **ONNX PromptGuard is now truly torch-free.** Dropped `optimum` (which
