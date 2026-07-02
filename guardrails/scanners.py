@@ -10,9 +10,6 @@ per phase:
   for indirect injection, optionally ``AgentAlignmentScanner`` as a second
   stage when PromptGuard flags suspicion.
 
-The ONNX scanner imports ``optimum[onnxruntime]`` lazily so the package
-remains importable without the model stack installed. The AgentAlignment
-scanner imports ``openai`` lazily (only needed when ENABLE_AGENT_ALIGNMENT=1).
 """
 
 from __future__ import annotations
@@ -406,7 +403,7 @@ class OnnxPromptGuardScanner:
     The scanner reproduces LlamaFirewall's PromptGuard scoring exactly (same
     tokenizer, same softmax).  The ``gravitee-io`` ONNX export is a **2-class**
     model ``[benign, malicious]``; the code always takes the **last** class as
-    the block score, which works for both 2-class and 3-class exports.
+    the block score.
 
     ``onnxruntime`` and ``transformers`` are imported lazily so the package
     remains importable without them installed (the regex-only path still works).
@@ -486,8 +483,8 @@ class OnnxPromptGuardScanner:
     def _score(self, text: str) -> float:
         """Return the jailbreak probability (last-class softmax).
 
-        PromptGuard-2 is a 3-class classifier ``[safe, injection, jailbreak]``;
-        we softmax over the logits and take the jailbreak (last) class — the
+        The ``gravitee-io`` ONNX export is a **2-class** model ``[benign, malicious]``;
+        we softmax over the logits and take the malicious (last) class — the
         same computation LlamaFirewall's ``promptguard_utils`` performs. We use
         ``return_tensors="np"`` so no torch dependency is required.
         """
@@ -505,13 +502,7 @@ class OnnxPromptGuardScanner:
         shifted = logits - logits.max(axis=-1, keepdims=True)
         exp = np.exp(shifted)
         probs = exp / exp.sum(axis=-1, keepdims=True)
-        # The original Meta PromptGuard-2 outputs 3 logits:
-        #   [safe, injection, jailbreak].
-        # The gravitee-io ONNX export is a 2-class model:
-        #   [benign, malicious].
-        # We always take the LAST class as the "block" score so both
-        # exports work correctly.  (The last class is always the
-        # "should-block" dimension regardless of arity.)
+        # We always take the LAST class as the "block" score.
         return float(probs[0, -1])
 
 
