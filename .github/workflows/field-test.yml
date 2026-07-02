@@ -9,12 +9,6 @@ name: Field Test (ONNX)
 
 on:
   workflow_dispatch:
-    inputs:
-      hf-endpoint:
-        description: "HF endpoint override (leave empty for default; set https://hf-mirror.com for GFW)"
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
@@ -42,19 +36,11 @@ jobs:
           pip install -e ".[dev,onnx]"
 
       - name: Download ONNX PromptGuard model
-        env:
-          HF_ENDPOINT: ${{ inputs.hf-endpoint }}
-          HF_HUB_ENABLE_HF_TRANSFER: "1"
         run: |
           python - <<'PY'
           import os, sys
-          os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
-
-          endpoint = os.environ.get("HF_ENDPOINT", "")
-          if endpoint:
-              print(f"Using HF_ENDPOINT={endpoint}")
-
           from huggingface_hub import snapshot_download
+
           model_file = "model.onnx"
           print(f"Downloading model (file={model_file})...")
           path = snapshot_download(
@@ -76,6 +62,9 @@ jobs:
               with open(os.environ.get("GITHUB_ENV", "/dev/null"), "a") as env_fh:
                   env_fh.write(f"MODEL_SNAP_DIR={snap_path}\n")
               print(f"MODEL_SNAP_DIR={snap_path}")
+          else:
+              print("ERROR: model snapshot directory not found after download")
+              sys.exit(1)
           PY
 
       - name: Run field test (functional)
@@ -125,7 +114,6 @@ jobs:
           **Branch:** ${{ github.ref_name }}
           **Commit:** ${{ github.sha }}
           **Model file:** `model.onnx`
-          **HF endpoint:** `${{ inputs.hf-endpoint || '(default)' }}`
 
           ## Functional Test
 
