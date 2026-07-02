@@ -353,15 +353,26 @@ class GuardrailEngine:
 
         async def _scan_one(scanner: Scanner) -> ScanResult:
             name = getattr(scanner, "name", repr(scanner))
-            try:
-                return await asyncio.wait_for(
-                    scanner.scan(content, role),
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                return self._failure_result(name, f"timeout>{self._cfg.scanner_timeout_ms}ms")
-            except Exception as exc:
-                return self._failure_result(name, f"error:{type(exc).__name__}:{exc}")
+            with self._obs.span(
+                f"scanner.{name}", scanner=name, role=role
+            ) as attrs:
+                attrs["outcome"] = "unknown"
+                try:
+                    result = await asyncio.wait_for(
+                        scanner.scan(content, role),
+                        timeout=timeout,
+                    )
+                    attrs["outcome"] = result.outcome.value
+                    return result
+                except asyncio.TimeoutError:
+                    attrs["outcome"] = "timeout"
+                    return self._failure_result(
+                        name, f"timeout>{self._cfg.scanner_timeout_ms}ms"
+                    )
+                except Exception as exc:
+                    attrs["outcome"] = "error"
+                    attrs["error"] = f"{type(exc).__name__}:{exc}"
+                    return self._failure_result(name, f"error:{type(exc).__name__}:{exc}")
 
         return list(await asyncio.gather(*(_scan_one(s) for s in scanners)))
 
