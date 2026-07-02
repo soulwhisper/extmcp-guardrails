@@ -230,38 +230,38 @@ Releases are tag-driven. The flow is:
    `## [x.y.z] - YYYY-MM-DD`.
 2. Open a PR with those changes. CI runs on the PR.
 3. After merge, tag the merge commit on `main`. Tags are bare semver (no
-   leading `v`); `docker-publish.yml` matches both `0.2.0` and `v0.2.0`:
+   leading `v`); `docker-publish.yml` matches both `0.3.0` and `v0.3.0`:
 
    ```bash
-   git tag 0.2.0
-   git push origin 0.2.0
+   git tag 0.3.0
+   git push origin 0.3.0
    ```
 
 4. **`docker-publish.yml`** fires on the tag push (create or force-update) and
    builds/pushes the multi-arch (linux/amd64, linux/arm64) image to
-   `ghcr.io/soulwhisper/mcp-guardrails` tagged `0.2.0`, `0.2`, and `latest`.
+   `ghcr.io/soulwhisper/mcp-guardrails` tagged `0.3.0`, `0.3`, and `latest`.
 5. Create the **GitHub Release** via the GitHub UI: Releases → Draft a new
    release → select the tag → paste the `## [x.y.z]` section from
    `CHANGELOG.md` as the description. (There is no release-creation workflow;
    releases are authored manually so the changelog body is curated.)
 6. Sanity-check the release: pull the image, run
-   `docker run --rm -p 9001:9001 ghcr.io/soulwhisper/mcp-guardrails:0.2.0`,
+   `docker run --rm -p 9001:9001 ghcr.io/soulwhisper/mcp-guardrails:0.3.0`,
    hit the health check, run `tests/e2e_smoke.py` against it.
 
 There is no separate "release branch" — releases are tags on `main`. Hotfix
-releases follow the same flow with a `0.2.1` tag.
+releases follow the same flow with a `0.3.1` tag.
 
 ### Image tags: immutable vs floating
 
-- **`x.y.z` (e.g. `0.2.0`) is immutable.** Never force-push a version tag to a
-  different commit — consumers pin `0.2.0` expecting the exact image. To ship a
-  change, cut a **new** tag (`0.2.1`).
-- **`latest` and `x.y` (e.g. `0.2`) float** by design — they move to the newest
+- **`x.y.z` (e.g. `0.3.0`) is immutable.** Never force-push a version tag to a
+  different commit — consumers pin `0.3.0` expecting the exact image. To ship a
+  change, cut a **new** tag (`0.3.1`).
+- **`latest` and `x.y` (e.g. `0.3`) float** by design — they move to the newest
   tag on the next release. Don't manually re-point them.
 - **Rebuild the *same* tag** (e.g. a build that failed and you want to retry the
   same commit) without changing it:
   ```bash
-  gh workflow run docker-publish.yml --ref 0.2.0
+  gh workflow run docker-publish.yml --ref 0.3.0
   ```
   (`docker-publish.yml` has a `workflow_dispatch` trigger; it rebuilds the
   selected ref and re-pushes the same image tags.)
