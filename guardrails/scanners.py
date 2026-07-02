@@ -74,6 +74,27 @@ _SLACK_TOKEN = re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")
 #   sk-ant-api03-<key>          (Anthropic)
 # Requires >=20 characters after "sk-" to avoid false positives.
 _LLM_API_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")
+# Google API key — 39-char alphanumeric after "AIza".
+_GOOGLE_API_KEY = re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")
+# JWT — three base64url-encoded segments separated by dots. The header always
+# starts with "eyJ" ({" in base64url).  The payload is typically 20+ chars;
+# the signature varies widely (HMAC-SHA256 is 43 chars, but short test JWTs
+# can be under 10).  We require >=4 chars for the signature to avoid matching
+# degenerate "eyJ.x.y" patterns.
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,}\b")
+# Format-injection markers — ChatML / instruction-format tokens that an
+# attacker can inject to escape the current conversation role.  PromptGuard-2
+# (trained on Llama tokenizer) does not recognise ChatML tokens like
+# <|im_start|>, so these are a deterministic backstop.
+_FORMAT_INJECTION = re.compile(
+    r"\[SYSTEM\]|\[INST\]|\[/INST\]|\[ASSISTANT\]|"
+    r"<\|?im_start\|?>|<\|?im_end\|?>|"
+    r"###\s*(?:system|instruction|override|ignore)"
+)
+# Connection strings with embedded credentials — common leak vector.
+_CONNECTION_STRING = re.compile(
+    r"(?i)\b(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqps?)://[^\s\"'<>]{10,}",
+)
 _PRIVATE_KEY = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
 _GENERIC_HIGH_ENTROPY = re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b")
 
@@ -111,14 +132,36 @@ def default_patterns() -> list[Pattern]:
             "hidden_ascii", _HIDDEN_ASCII, ScanOutcome.BLOCK, "hidden/control unicode detected", 0.9
         ),
         Pattern(
+            "format_injection",
+            _FORMAT_INJECTION,
+            ScanOutcome.BLOCK,
+            "format-injection marker (ChatML / instruction tag)",
+            0.98,
+        ),
+        Pattern(
             "private_key", _PRIVATE_KEY, ScanOutcome.BLOCK, "private key material in payload", 0.99
         ),
         Pattern("aws_access_key", _AWS_KEY, ScanOutcome.BLOCK, "AWS access key id", 0.95),
+        Pattern("google_api_key", _GOOGLE_API_KEY, ScanOutcome.BLOCK, "Google API key", 0.95),
         Pattern("github_pat", _GITHUB_PAT, ScanOutcome.BLOCK, "GitHub personal access token", 0.95),
         Pattern("gitlab_pat", _GITLAB_PAT, ScanOutcome.BLOCK, "GitLab personal access token", 0.95),
         Pattern("slack_token", _SLACK_TOKEN, ScanOutcome.BLOCK, "Slack token", 0.95),
         Pattern(
             "llm_api_key", _LLM_API_KEY, ScanOutcome.BLOCK, "LLM API key in payload", 0.95
+        ),
+        Pattern(
+            "jwt",
+            _JWT,
+            ScanOutcome.HUMAN_REVIEW,
+            "JWT token (may contain credentials)",
+            0.80,
+        ),
+        Pattern(
+            "connection_string",
+            _CONNECTION_STRING,
+            ScanOutcome.HUMAN_REVIEW,
+            "connection string with potential credentials",
+            0.75,
         ),
         Pattern(
             "high_entropy_blob",

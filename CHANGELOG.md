@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`sk-ant-api03-...`) API keys with the new `llm_api_key` pattern.
   Previously only AWS/GitHub/GitLab/Slack token shapes were matched.
 
+- **Added 4 new regex patterns** from production guardrails config:
+  `google_api_key` (`AIza...`), `jwt` (`eyJ...`), `format_injection`
+  (ChatML/instruction tags like `[SYSTEM]`, `<|im_start|>`, `### system`),
+  and `connection_string` (`mongodb://`, `postgresql://`, etc. with embedded
+  credentials).  The format-injection patterns are a deterministic backstop
+  for markers the ONNX PromptGuard model may not recognise (e.g. ChatML
+  tokens on a Llama-based tokenizer).
+
 ### Added
 
 - `tests/field_test.py` — comprehensive functional test exercising the full
