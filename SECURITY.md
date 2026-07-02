@@ -24,7 +24,7 @@ In scope:
 
 - Bypass of the fail-closed default (any path that lets an unguarded MCP
   exchange through to the upstream or to the agent).
-- Bypass of any `BLOCK` outcome (regex scanner, LlamaFirewall scanner,
+- Bypass of any `BLOCK` outcome (regex scanner, ONNX PromptGuard scanner,
   Invariant rule).
 - Malformed-payload handling that does not map to `INVALID_ARGUMENT`.
 - Wire-contract drift between `proto/ext_mcp.proto` and the agentgateway
@@ -36,21 +36,14 @@ Out of scope (but still welcome as regular issues):
 - Bypasses that require an already-malicious upstream MCP server (the
   sidecar assumes the upstream is untrusted; response-side scanning is
   the defence).
-- Generic LlamaFirewall / PromptGuard-2 model weaknesses (report those
-  upstream to the
+- Generic PromptGuard-2 model weaknesses (report those upstream to the
   [PurpleLlama](https://github.com/meta-llama/PurpleLlama) project).
 - Generic agentgateway issues (report those upstream to
   [agentgateway](https://github.com/agentgateway/agentgateway)).
 
 ## Supported versions
 
-Only the latest minor release line receives security fixes. The project is
-pre-1.0; do not run anything older than the current `0.1.x` in production.
-
-| Version | Supported |
-| ------- | --------- |
-| 0.1.x   | Yes       |
-| < 0.1   | No        |
+Only the latest minor release line receives security fixes.
 
 ## Hardening recommendations
 

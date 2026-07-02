@@ -12,11 +12,6 @@ the `ASSISTANT` role (the indirect-injection frontline), with optional
 cost-bounded AgentAlignment LLM as a second stage gated on first-stage
 `HUMAN_REVIEW`.
 
-[gravitee-io/Llama-Prompt-Guard-2-86M-onnx]: https://huggingface.co/gravitee-io/Llama-Prompt-Guard-2-86M-onnx
-
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Image](https://img.shields.io/badge/image-ghcr.io%2Fsoulwhisper%2Fmcp--guardrails%3A0.2.0-blue)](https://github.com/soulwhisper/mcp-guardrails/pkgs/container/mcp-guardrails)
-
 ---
 
 ## Table of contents
@@ -44,23 +39,23 @@ sequenceDiagram
     participant Agent as MCP Agent (LLM)
     participant GW as agentgateway
     participant Sidecar as ExtMcp Guardrail (sidecar)
-    participant LF as LlamaFirewall
+    participant PG as PromptGuard ONNX
     participant INV as Invariant Engine
     participant MCP as Upstream MCP Server
 
     Agent->>GW: tools/call (JSON-RPC)
     GW->>Sidecar: CheckRequest(McpRequest)
-    Sidecar->>LF: scan(params, role=TOOL)
+    Sidecar->>PG: scan(params, role=TOOL)
     Sidecar->>INV: record(tool, args) + evaluate()
-    LF-->>Sidecar: ScanDecision
+    PG-->>Sidecar: ScanDecision
     INV-->>Sidecar: ScanResult
     Sidecar-->>GW: McpRequestResult{allowed|mutated|error}
     alt allowed / mutated
         GW->>MCP: forward JSON-RPC
         MCP-->>GW: result
         GW->>Sidecar: CheckResponse(McpResponse)
-        Sidecar->>LF: scan(result, role=ASSISTANT)
-        LF-->>Sidecar: ScanDecision
+        Sidecar->>PG: scan(result, role=ASSISTANT)
+        PG-->>Sidecar: ScanDecision
         Sidecar-->>GW: McpResponseResult{allowed|mutated|error}
         alt allowed / mutated
             GW-->>Agent: result
@@ -86,10 +81,10 @@ flowchart TD
     subgraph Engine
         ENG --> EXT[extract_text + truncate]
         EXT --> RX[RegexScanner<br/>hidden-ascii / PII / secrets]
-        EXT --> LF[LlamaFirewallScanner<br/>PromptGuard-2 + CodeShield]
+        EXT --> PG[OnnxPromptGuardScanner<br/>PromptGuard-2]
         EXT --> INV[InvariantEngine<br/>trace record + evaluate]
         RX --> AGG
-        LF --> AGG
+        PG --> AGG
         INV --> AGG
         AGG[DecisionAggregator<br/>fail-closed]
     end
@@ -146,7 +141,7 @@ On `CheckRequest` for `tools/call`, the engine does two things in parallel:
 1. **Semantic scan**: extracts text from the JSON-RPC `params` object
    (`extract_text`), truncates to `MAX_CONTENT_BYTES` on a UTF-8 boundary,
    then runs the configured content scanners (`RegexScanner` for hidden
-   ASCII / PII / secrets, `LlamaFirewallScanner` for PromptGuard-2 + CodeShield)
+   ASCII / PII / secrets, `OnnxPromptGuardScanner` for PromptGuard-2)
    against the text with role `TOOL`.
 2. **Invariant trace**: appends `(tool, args)` to a bounded sliding window
    (`INVARIANT_WINDOW` calls, default 64) and evaluates every `ToxicFlowRule`
@@ -177,7 +172,7 @@ responses only — the cost-control knob from the original design.
 
 Prerequisites: Python 3.10+ and `pip`. The pure-Python policy core
 (models, aggregator, invariant engine, regex scanner) runs without the ML
-stack; LlamaFirewall is imported lazily.
+stack; the ONNX PromptGuard scanner is imported lazily.
 
 ```bash
 # 1. Clone
@@ -197,7 +192,7 @@ make test
 # 5. Build the container image
 make docker
 
-# 6. Run the server locally (regex-only; llamafirewall absent is graceful)
+# 6. Run the server locally (regex-only; onnxruntime absent is graceful)
 make run
 ```
 
@@ -225,7 +220,7 @@ directly (no `optimum`, no `torch`) — `onnxruntime` (~15MB) + `transformers`
 docker run --rm -p 9001:9001 \
   -e ENABLE_REGEX_SCANNER=1 \
   -e ENABLE_PROMPTGUARD=1 \
-  ghcr.io/soulwhisper/mcp-guardrails:0.2.0
+  ghcr.io/soulwhisper/mcp-guardrails:latest
 ```
 
 The Dockerfile pre-downloads the ONNX model at build time (`model.onnx`,
@@ -264,7 +259,7 @@ docker run --rm -p 9001:9001 \
   -e LF_ALIGNMENT_MODEL=gpt-4o \
   -e LF_ALIGNMENT_API_BASE=https://api.openai.com/v1 \
   -e LF_ALIGNMENT_API_KEY=sk-xxx \
-  ghcr.io/soulwhisper/mcp-guardrails:0.2.0
+  ghcr.io/soulwhisper/mcp-guardrails:latest
 ```
 
 | Env var                 | Default                                             | Description                                                                         |
@@ -291,7 +286,7 @@ docker run --rm -p 9001:9001 \
   -e GUARDRAIL_DRY_RUN=1 \
   -e ENABLE_REGEX_SCANNER=0 \
   -e ENABLE_PROMPTGUARD=0 \
-  ghcr.io/soulwhisper/mcp-guardrails:0.2.0
+  ghcr.io/soulwhisper/mcp-guardrails:latest
 ```
 
 ### End-to-end smoke test
@@ -313,34 +308,34 @@ homelab, and (with resource bumps) production. Defaults encode the
 opt-in second stage, fail-closed, 32KiB content budget, 500ms scanner
 deadline.
 
-| Group          | Env var                          | Default                       | Description                                                                                                                                    |
-| -------------- | -------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Policy         | `FAILURE_MODE`                   | `failClosed`                  | `failClosed` denies on scanner failure/timeout (recommended for write-capable agents). `failOpen` allows with a review flag.                   |
-| Policy         | `HUMAN_REVIEW_MODE`              | `pass`                        | How `HUMAN_REVIEW` outcomes are resolved. `pass` forwards + emits an audit warning; `deny` escalates to a hard deny.                           |
-| Scanners       | `MAX_CONTENT_BYTES`              | `32768`                       | Max bytes of text fed to any scanner. Beyond this the payload is truncated (UTF-8-safe) and the decision is flagged `truncated=true` in audit. |
-| Scanners       | `ENABLE_REGEX_SCANNER`           | `true`                        | Deterministic pattern scanner (hidden ASCII / PII / secrets). Zero ML deps.                                                                    |
-| Scanners       | `ENABLE_PROMPTGUARD`             | `true`                        | ONNX PromptGuard semantic scanner. Falls back to regex-only if `onnxruntime`/`transformers` is absent.                                               |
-| Scanners       | `ENABLE_AGENT_ALIGNMENT`         | `false`                       | LLM-based AgentAlignment. Off by default; only triggered as a second stage when PromptGuard flags `HUMAN_REVIEW` on a response.                |
-| PromptGuard    | `LF_ONNX_MODEL`                  | `gravitee-io/...-onnx`        | ONNX model repo ID. Public, non-gated — no HF_TOKEN needed.                                                                                    |
-| PromptGuard    | `LF_ONNX_FILE`                   | `model.onnx`                  | Which `.onnx` file to load. `model.onnx` = full-precision (98.01% accuracy). `model.quant.onnx` = quantized (89.89%, ~90MB).                   |
-| PromptGuard    | `LF_ONNX_LOCAL_DIR`              | _(unset; `/models/hf/pg2` in container)_ | Local dir of a pre-baked model. When set, load tokenizer + `.onnx` from disk (air-gapped, no hub access). |
-| PromptGuard    | `LF_PROMPTGUARD_BLOCK_THRESHOLD` | `0.9`                         | Block threshold (0.0-1.0). PromptGuard score >= threshold -> BLOCK.                                                                            |
-| AgentAlignment | `LF_ALIGNMENT_MODEL`             | `meta-llama/...-FP8`          | LLM model name for AgentAlignment (only when `ENABLE_AGENT_ALIGNMENT=true`). Default: Llama-4-Maverick via Together AI.                        |
-| AgentAlignment | `LF_ALIGNMENT_API_BASE`          | `https://api.together.xyz/v1` | LLM API base URL (OpenAI-compatible). Override for OpenAI, Azure, vLLM, Ollama, etc.                                                           |
-| AgentAlignment | `LF_ALIGNMENT_API_KEY`           | _(unset)_                     | API key for the LLM provider. The scanner reads the key directly from this env var. Only needed when `ENABLE_AGENT_ALIGNMENT=true`.            |
-| HF cache       | `HF_HOME`                        | `/models/hf`                  | HuggingFace cache directory. Set in Dockerfile; the ONNX scanner loads the model from here.                                                    |
-| Tokenizers     | `TOKENIZERS_PARALLELISM`         | _(unset)_                     | Set to `true` for parallel tokenization (the sidecar is single-process async, so unset is fine).                                               |
-| Invariant      | `INVARIANT_WINDOW`               | `64`                          | Sliding-window size for the cross-call toxic-flow trace. Covers a typical homelab agent tool-use chain; bump for long multi-step plans.        |
-| Invariant      | `INVARIANT_RULES_PATH`           | _(unset)_                     | Filesystem path to a rule pack (`.py` / `.policy`). Hot-reloadable via `SIGHUP`. Takes precedence over `INVARIANT_RULES_MODULE`.               |
-| Invariant      | `INVARIANT_RULES_MODULE`         | `guardrails.rules.default`    | Dotted Python module path to a rule pack. Used when `INVARIANT_RULES_PATH` is unset.                                                           |
-| Timing         | `SCANNER_TIMEOUT_MS`             | `500`                         | Per-scanner deadline in milliseconds. Exceeded -> treated per `FAILURE_MODE`. Keep sidecar < gateway so the sidecar decides first.             |
-| Networking     | `LISTEN_ADDR`                    | `[::]:9001`                   | gRPC bind address. `127.0.0.1:9001` for loopback-only (e.g. sidecar-on-localhost).                                                             |
-| Networking     | `SERVER_MAX_WORKERS`             | `8`                           | `grpc.aio` ThreadPoolExecutor size. Each in-flight RPC occupies one worker; raise for high-concurrency deployments.                            |
-| Observability  | `OTEL_EXPORTER_OTLP_ENDPOINT`    | _(unset)_                     | OTLP/gRPC endpoint (e.g. `http://otel-collector.observability.svc:4317`). When unset or OTel SDK absent, the sidecar degrades to audit-only.   |
-| Observability  | `OTEL_SERVICE_NAME`              | `mcp-guardrails`              | Service name reported on OTel spans/metrics.                                                                                                   |
-| Observability  | `AUDIT_LOG_PATH`                 | _(unset)_                     | Append-only JSONL audit log path. `-` or unset -> stdout. Always on; survives OTel outages.                                                    |
-| Misc           | `GUARDRAIL_DRY_RUN`              | `false`                       | Replace all real scanners with allow-stubs. Use to validate wiring without loading ML models.                                                  |
-| Misc           | `LOG_LEVEL`                      | `INFO`                        | Python logging level (`DEBUG` / `INFO` / `WARNING` / `ERROR`).                                                                                 |
+| Group          | Env var                          | Default                                  | Description                                                                                                                                    |
+| -------------- | -------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Policy         | `FAILURE_MODE`                   | `failClosed`                             | `failClosed` denies on scanner failure/timeout (recommended for write-capable agents). `failOpen` allows with a review flag.                   |
+| Policy         | `HUMAN_REVIEW_MODE`              | `pass`                                   | How `HUMAN_REVIEW` outcomes are resolved. `pass` forwards + emits an audit warning; `deny` escalates to a hard deny.                           |
+| Scanners       | `MAX_CONTENT_BYTES`              | `32768`                                  | Max bytes of text fed to any scanner. Beyond this the payload is truncated (UTF-8-safe) and the decision is flagged `truncated=true` in audit. |
+| Scanners       | `ENABLE_REGEX_SCANNER`           | `true`                                   | Deterministic pattern scanner (hidden ASCII / PII / secrets). Zero ML deps.                                                                    |
+| Scanners       | `ENABLE_PROMPTGUARD`             | `true`                                   | ONNX PromptGuard semantic scanner. Falls back to regex-only if `onnxruntime`/`transformers` is absent.                                         |
+| Scanners       | `ENABLE_AGENT_ALIGNMENT`         | `false`                                  | LLM-based AgentAlignment. Off by default; only triggered as a second stage when PromptGuard flags `HUMAN_REVIEW` on a response.                |
+| PromptGuard    | `LF_ONNX_MODEL`                  | `gravitee-io/...-onnx`                   | ONNX model repo ID. Public, non-gated — no HF_TOKEN needed.                                                                                    |
+| PromptGuard    | `LF_ONNX_FILE`                   | `model.onnx`                             | Which `.onnx` file to load. `model.onnx` = full-precision (98.01% accuracy). `model.quant.onnx` = quantized (89.89%, ~90MB).                   |
+| PromptGuard    | `LF_ONNX_LOCAL_DIR`              | _(unset; `/models/hf/pg2` in container)_ | Local dir of a pre-baked model. When set, load tokenizer + `.onnx` from disk (air-gapped, no hub access).                                      |
+| PromptGuard    | `LF_PROMPTGUARD_BLOCK_THRESHOLD` | `0.9`                                    | Block threshold (0.0-1.0). PromptGuard score >= threshold -> BLOCK.                                                                            |
+| AgentAlignment | `LF_ALIGNMENT_MODEL`             | `meta-llama/...-FP8`                     | LLM model name for AgentAlignment (only when `ENABLE_AGENT_ALIGNMENT=true`). Default: Llama-4-Maverick via Together AI.                        |
+| AgentAlignment | `LF_ALIGNMENT_API_BASE`          | `https://api.together.xyz/v1`            | LLM API base URL (OpenAI-compatible). Override for OpenAI, Azure, vLLM, Ollama, etc.                                                           |
+| AgentAlignment | `LF_ALIGNMENT_API_KEY`           | _(unset)_                                | API key for the LLM provider. The scanner reads the key directly from this env var. Only needed when `ENABLE_AGENT_ALIGNMENT=true`.            |
+| HF cache       | `HF_HOME`                        | `/models/hf`                             | HuggingFace cache directory. Set in Dockerfile; the ONNX scanner loads the model from here.                                                    |
+| Tokenizers     | `TOKENIZERS_PARALLELISM`         | _(unset)_                                | Set to `true` for parallel tokenization (the sidecar is single-process async, so unset is fine).                                               |
+| Invariant      | `INVARIANT_WINDOW`               | `64`                                     | Sliding-window size for the cross-call toxic-flow trace. Covers a typical homelab agent tool-use chain; bump for long multi-step plans.        |
+| Invariant      | `INVARIANT_RULES_PATH`           | _(unset)_                                | Filesystem path to a rule pack (`.py` / `.policy`). Hot-reloadable via `SIGHUP`. Takes precedence over `INVARIANT_RULES_MODULE`.               |
+| Invariant      | `INVARIANT_RULES_MODULE`         | `guardrails.rules.default`               | Dotted Python module path to a rule pack. Used when `INVARIANT_RULES_PATH` is unset.                                                           |
+| Timing         | `SCANNER_TIMEOUT_MS`             | `500`                                    | Per-scanner deadline in milliseconds. Exceeded -> treated per `FAILURE_MODE`. Keep sidecar < gateway so the sidecar decides first.             |
+| Networking     | `LISTEN_ADDR`                    | `[::]:9001`                              | gRPC bind address. `127.0.0.1:9001` for loopback-only (e.g. sidecar-on-localhost).                                                             |
+| Networking     | `SERVER_MAX_WORKERS`             | `8`                                      | `grpc.aio` ThreadPoolExecutor size. Each in-flight RPC occupies one worker; raise for high-concurrency deployments.                            |
+| Observability  | `OTEL_EXPORTER_OTLP_ENDPOINT`    | _(unset)_                                | OTLP/gRPC endpoint (e.g. `http://otel-collector.observability.svc:4317`). When unset or OTel SDK absent, the sidecar degrades to audit-only.   |
+| Observability  | `OTEL_SERVICE_NAME`              | `mcp-guardrails`                         | Service name reported on OTel spans/metrics.                                                                                                   |
+| Observability  | `AUDIT_LOG_PATH`                 | _(unset)_                                | Append-only JSONL audit log path. `-` or unset -> stdout. Always on; survives OTel outages.                                                    |
+| Misc           | `GUARDRAIL_DRY_RUN`              | `false`                                  | Replace all real scanners with allow-stubs. Use to validate wiring without loading ML models.                                                  |
+| Misc           | `LOG_LEVEL`                      | `INFO`                                   | Python logging level (`DEBUG` / `INFO` / `WARNING` / `ERROR`).                                                                                 |
 
 > The table above is the source of truth for runtime configuration and is
 > kept in sync with `guardrails/config.py`. (The two `INVARIANT_RULES_*`
@@ -497,7 +492,7 @@ mcp-guardrails/
 │   ├── models.py                 # Decision, ScanResult, ScanOutcome, FailureMode, ...
 │   ├── aggregator.py             # fail-closed DecisionAggregator
 │   ├── invariant.py              # FlowStep, ToxicFlowRule, LoopRule, InvariantEngine
-│   ├── scanners.py               # Scanner protocol, RegexScanner, LlamaFirewallScanner, Stub
+│   ├── scanners.py               # Scanner protocol, RegexScanner, OnnxPromptGuardScanner, Stub
 │   ├── engine.py                 # GuardrailEngine orchestrator (request + response paths)
 │   ├── servicer.py               # ExtMcpServicer (gRPC wire mapping)
 │   ├── config.py                 # GuardrailConfig.from_env()
